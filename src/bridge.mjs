@@ -2417,6 +2417,13 @@ async function poll() {
   maintenanceTimer.unref();
 
   await checkConnection();
+  // Constructor pre-start is intentionally asynchronous. After a bridge
+  // reload the old TUI can disappear during Telegram connection startup,
+  // leaving launchd healthy but `Skald` with nothing to attach to. Re-check
+  // the visible TUI at the end of startup and wait until it is attachable.
+  if (codexMode === 'kimi' && config.kimiEngine === 'tui' && sessionId) {
+    await codex.ensureTui(sessionId);
+  }
   log(
     `${config.botName} Telegram bridge started; private users ${[...allowedUserIds].join(',')};`
     + ` groups ${[...allowedGroups.keys()].join(',') || 'none'}; session ${sessionId || 'new'}`,
