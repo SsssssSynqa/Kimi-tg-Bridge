@@ -1,0 +1,18 @@
+.env
+config.json
+*.log
+*.err.log
+# Runtime state: session ids, poll offset, durable journal, rate-limit
+# bookkeeping, dynamic group authorizations, context cursors, optional
+# transcript. All of it is private and machine-local.
+.state/
+offset.txt
+session.txt
+session.previous.txt
+telegram-images/
+telegram-files/
+node_modules/
+.DS_Store
+.kimi-code/
+*.bak-*
+letters/
