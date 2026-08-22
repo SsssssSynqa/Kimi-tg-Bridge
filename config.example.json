@@ -16,6 +16,7 @@
       "allowAllHumanUsers": false,
       "allowAllBotUsers": false,
       "allowUnaddressedBotMessages": false,
+      "privateToolsEnabled": false,
       "disableReplyQuote": false,
       "allowedUserIds": [
         "123456789"

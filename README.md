@@ -325,7 +325,7 @@ When private tool mode is enabled:
 - Private chats use a restricted `workspaceWrite` sandbox.
 - Writes are limited to `toolWritableRoots`.
 - Network access is disabled unless `toolNetworkAccess: true`.
-- Group chats remain read-only for every turn.
+- Group workspace tools remain read-only unless that static group explicitly sets `privateToolsEnabled: true`; Telegram replies, reactions, edits, and attachments are never blocked by this boundary.
 - Command and file approvals follow the rules in [Approval Requests](#approval-requests).
 
 Read-only here is a filesystem-write boundary, not a claim that read-capable tools are absent: a group turn can still run read-only shell operations against files the sandbox can see. The group prompt tells the model not to use tools and write/network approvals are denied, but this is not a cryptographic no-tools guarantee.
@@ -339,7 +339,7 @@ The bridge uses a single persistent Codex thread by default, so private chats, g
 - Stable Telegram rules live in your workspace `AGENTS.md`; start from `AGENTS.example.md`.
 - Per-turn prompts are intentionally small: a mode marker such as `TG_PRIVATE` or `TG_GROUP_BATCH` plus a JSON payload with the current message(s).
 - Group profiles are defined in `AGENTS.md` and selected by the short `profile` key.
-- Group turns are always read-only, even when private tool mode is on.
+- Group workspace writes require both global private tool mode and that static group's `privateToolsEnabled: true`. This never disables Telegram transport tools.
 
 If you need stronger isolation, run separate bridge instances with separate threads.
 

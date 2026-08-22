@@ -1021,7 +1021,12 @@ async function generateGroupReplies(batch, options) {
         recentContextDelta,
         pendingContextImageCount: pending.images.length,
       }), images, {
-        toolMode: 'read-only',
+        // Telegram transport is never gated here. Local workspace capability
+        // is opt-in per trusted group so private family rooms can share the
+        // private tool contract without granting it to public groups.
+        toolMode: privateToolsEnabled && groupConfig.privateToolsEnabled === true
+          ? 'private-tools'
+          : 'read-only',
         outputSchema: GROUP_REPLY_SCHEMA,
         // Silence is a valid group outcome (mention-only): an empty turn must
         // settle as "no replies", not as a failure that retries the same batch
@@ -1545,7 +1550,7 @@ async function processPrivateMessage(message, text, context, images = [], files 
         `Private tool mode: ${privateToolsEnabled ? 'enabled' : 'disabled'}`,
         `Writable roots: ${toolWritableRoots.join(', ')}`,
         `Network access: ${config.toolNetworkAccess === true ? 'enabled' : 'disabled'}`,
-        'Group chats are always read-only.',
+        'Group workspace tools: opt-in per group; Telegram replies/reactions are never blocked.',
       ].join('\n'),
     );
     return;
