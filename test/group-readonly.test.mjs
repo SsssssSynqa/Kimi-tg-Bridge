@@ -6,6 +6,8 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { KimiCliClient } from '../src/kimi-client.mjs';
+import { parseBatchReplies } from '../src/group-batcher.mjs';
+import { telegramToolMode } from '../src/tool-mode-policy.mjs';
 
 const hookPath = path.resolve(
   path.dirname(new URL(import.meta.url).pathname),
@@ -56,4 +58,25 @@ test('orphaned or expired guards fail open for non-group terminal work', () => {
     mode: 'group-read-only', ownerPid: 999999, expiresAt: Date.now() + 60_000,
   }), { mode: 0o600 });
   assert.equal(runHook(workdir, 'Bash').status, 0);
+});
+
+test('every group uses read-only local tools while private mode keeps its configured capability', () => {
+  assert.equal(telegramToolMode({ isGroup: true, privateToolsEnabled: true }), 'read-only');
+  assert.equal(telegramToolMode({ isGroup: true, privateToolsEnabled: false }), 'read-only');
+  assert.equal(telegramToolMode({ isGroup: false, privateToolsEnabled: true }), 'private-tools');
+  assert.equal(telegramToolMode({ isGroup: false, privateToolsEnabled: false }), 'read-only');
+});
+
+test('bridge-owned reply and reaction envelopes remain usable while the local guard is active', async () => {
+  const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'skald-readonly-'));
+  const client = new KimiCliClient({ workdir, timeoutMs: 5000 });
+  await client.withToolMode('read-only', async () => {
+    assert.equal(runHook(workdir, 'Write').status, 2);
+    const replies = parseBatchReplies(
+      '{"replies":[{"text":"still speaking","replyToMessageId":7}],"react":"👀"}',
+      [7],
+    );
+    assert.deepEqual([...replies], [{ text: 'still speaking', replyToMessageId: 7 }]);
+    assert.equal(replies._react, '👀');
+  });
 });

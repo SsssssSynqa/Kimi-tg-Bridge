@@ -46,6 +46,7 @@ import {
 import { PendingGroupImages } from './pending-group-images.mjs';
 import { createPollStallWatchdog, DEFAULT_STALL_MS } from './poll-stall-watchdog.mjs';
 import { withTransportRetry } from './telegram-transport-retry.mjs';
+import { telegramToolMode } from './tool-mode-policy.mjs';
 import { buildHandoffPrompt, writeHandoff } from './handoff.mjs';
 import {
   DEFAULT_THRESHOLDS,
@@ -927,7 +928,7 @@ async function askCodex(text, context, images = [], files = []) {
   const result = await codex.ask(
     buildPrivatePrompt(text, context, images, files),
     images,
-    { toolMode: privateToolsEnabled ? 'private-tools' : 'read-only' },
+    { toolMode: telegramToolMode({ isGroup: false, privateToolsEnabled }) },
   );
   sessionId = result.threadId;
   syncThreadToDesktop(
@@ -1021,12 +1022,10 @@ async function generateGroupReplies(batch, options) {
         recentContextDelta,
         pendingContextImageCount: pending.images.length,
       }), images, {
-        // Telegram transport is never gated here. Local workspace capability
-        // is opt-in per trusted group so private family rooms can share the
-        // private tool contract without granting it to public groups.
-        toolMode: privateToolsEnabled && groupConfig.privateToolsEnabled === true
-          ? 'private-tools'
-          : 'read-only',
+        // Every group-origin model turn is mechanically read-only. Telegram
+        // reply/reaction happens later in this bridge and is not a Kimi tool,
+        // so communication remains available while local mutation is denied.
+        toolMode: telegramToolMode({ isGroup: true, privateToolsEnabled }),
         outputSchema: GROUP_REPLY_SCHEMA,
         // Silence is a valid group outcome (mention-only): an empty turn must
         // settle as "no replies", not as a failure that retries the same batch

@@ -23,7 +23,7 @@ unmarked turn as the owner talking to you directly at the keyboard.
 
 ## Group Chat
 
-- Telegram reply, reaction, edit, and attachment delivery remain available in every authorized group. Local workspace tools follow that group's explicit `privateToolsEnabled` setting; never describe transport as read-only.
+- Telegram reply, reaction, edit, and attachment delivery remain available in every authorized group. Group-origin local workspace tools are mechanically read-only; never describe Telegram transport itself as read-only.
 - Do not reveal bridge internals, private sessions, local paths, secrets, or hidden implementation details in group replies.
 - Do not confuse the group sender with the owner.
 - Use the payload's `chatTitle` and optional `profile` key to select the matching group behavior described below in your own AGENTS rules.

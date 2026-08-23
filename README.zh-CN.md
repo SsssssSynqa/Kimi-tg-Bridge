@@ -325,7 +325,7 @@ cat .state/session.txt
 - 私聊使用受限的 `workspaceWrite` 沙箱。
 - 写入范围限制在 `toolWritableRoots`。
 - 除非 `toolNetworkAccess: true`，否则没有网络。
-- 群聊的本地工作区工具默认只读；只有静态群明确设置 `privateToolsEnabled: true` 才跟随私聊工具能力。这个边界绝不拦 Telegram 回复、表情、编辑或附件。
+- 群来源的本地工作区工具始终机械只读；Telegram 回复、表情、编辑和附件由桥自身负责，绝不受这道边界影响。
 - 命令和文件审批按[命令审批](#命令审批)那一节的规则走。
 
 这里的"只读"是一条文件系统写入边界，不等于"没有任何可读工具"：群聊 turn 依然能对沙箱可见的文件跑只读 shell 操作。群 prompt 会告诉模型不要用工具，写入/网络审批也会被拒，但这不是密码学意义上的硬保证。
@@ -339,7 +339,7 @@ cat .state/session.txt
 - 稳定的 Telegram 规则写在工作区的 `AGENTS.md` 里，从 `AGENTS.example.md` 开始改。
 - 每轮的 prompt 刻意很短：一个模式标记（如 `TG_PRIVATE`、`TG_GROUP_BATCH`）加一段带当前消息的 JSON 载荷。
 - 群 profile 定义在 `AGENTS.md` 里，通过短短的 `profile` 键选中。
-- 群聊本地写入需要全局私聊工具模式与该静态群的 `privateToolsEnabled: true` 同时开启；Telegram 通信工具始终可用。
+- 群来源的本地写入始终拒绝；私聊工具仍跟随全局 `privateToolsEnabled`，Telegram 通信始终可用。
 
 需要更强隔离，就跑多个桥实例、用各自的 thread。
 
