@@ -469,16 +469,44 @@ function recentGroupContextDelta(chatId, threadId, options, currentBatchMessageI
   const cursor = groupContextCursors.get(`${chatId}::${threadId || ''}`) || 0;
   // Every unseen message is delivered, not just the newest N: a small display
   // window must never silently swallow older context the model has not read.
-  const messages = history
+  const unseen = history
     .filter((message) => Number(message.messageId) > cursor)
     .filter((message) => !currentBatchMessageIds.has(Number(message.messageId)))
     .slice(0, maxStored);
+  // 2026-08-30：条数上限（maxStored，默认 50）挡不住字符体积。
+  // 实证：会客室是活跃群而 requireMention=true，鸦鸦越久没被 @、未读 delta 攒得越多；
+  // 8/29 那次攒到 49 条 / 8670 字符，整批被 Kimi 判 400 high risk。逐条验证过
+  // 里面没有任何单句有罪（颜文字、"还不如杀了我"、图片单独发全部通过），
+  // 是整包累加越过风控阈值：同一批内容切到 5689 字通过、5824 字被拒。
+  // 更糟的是那一轮一旦写进历史，之后每个请求都带着它 → 连 compaction 都被拒，
+  // 桥从此永久 400（历史有毒→说不了话→压不掉历史，死锁）。
+  //
+  // 这里加一道总字符预算。保留上面那条注释的原意（不悄悄吞掉未读上下文），
+  // 只是不让它无限膨胀：超预算时**从最旧的开始丢、保住最近的**，
+  // 并把 omitted 置真，让模型知道前面还有没读到的，而不是假装完整。
+  // maxDeltaChars=0 关闭本预算，行为与 8/30 之前完全一致。
+  const charBudget = Math.max(0, Math.floor(numberOption(options.maxDeltaChars, 4000, 0)));
+  let messages = unseen;
+  let budgetDropped = false;
+  if (charBudget > 0) {
+    const kept = [];
+    let used = 0;
+    for (let i = unseen.length - 1; i >= 0; i -= 1) {
+      const size = String(unseen[i]?.text || '').length + 120;  // 120 ≈ 每条的元数据开销
+      if (used + size > charBudget && kept.length > 0) { budgetDropped = true; break; }
+      used += size;
+      kept.unshift(unseen[i]);
+    }
+    messages = kept;
+  }
   return {
     messages,
     previousContextThroughMessageId: cursor > 0 ? cursor : null,
     // With no cursor the earlier messages truly did not happen for this thread;
     // with one, they happened and were already delivered.
-    omitted: cursor > 0,
+    // budgetDropped：这一批因字符预算砍掉了更早的未读，同样必须算 omitted，
+    // 否则模型会以为自己看到了全部。
+    omitted: cursor > 0 || budgetDropped,
   };
 }
 
@@ -606,6 +634,12 @@ function makeCodexClient() {
       // dialog is invisible from a phone, so an unforwarded request is a turn
       // that silently waits forever.
       requestUserApproval: forwardApprovalToTelegram,
+      // Synqa's call (2026-08-26): cache expiry must keep the one complete
+      // session, continue without compaction, and tell her what happened.
+      onCacheHintContinue: () => sendMessage(
+        ownerUserId,
+        '鸦鸦检测到 Kimi 的 Cache expired 提示，已按你的设置保留完整上下文继续；本次没有 compact。',
+      ),
     });
   }
   if (codexMode === 'daemon') {
