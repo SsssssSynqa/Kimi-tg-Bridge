@@ -1,0 +1,34 @@
+{
+  "name": "telegram-kimi-bridge",
+  "version": "0.3.0",
+  "description": "A zero-dependency Telegram Bot API bridge for a persistent Kimi Code CLI session, with an optional tmux TUI that shares the same live session. Derived from Codex-tg-Bridge; the original Codex engines are still supported.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HailSyner/Kimi-tg-Bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/HailSyner/Kimi-tg-Bridge/issues"
+  },
+  "homepage": "https://github.com/HailSyner/Kimi-tg-Bridge#readme",
+  "bin": {
+    "telegram-codex-bridge": "src/bridge.mjs"
+  },
+  "scripts": {
+    "check": "node --check src/*.mjs",
+    "test": "node --test test/*.test.mjs",
+    "start": "node src/bridge.mjs --config config.json",
+    "check:config": "node src/bridge.mjs --config config.json --check",
+    "test:prompt": "node src/bridge.mjs --config config.json --test"
+  },
+  "keywords": [
+    "telegram",
+    "codex",
+    "bot",
+    "bridge"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}
