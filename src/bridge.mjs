@@ -474,7 +474,7 @@ function recentGroupContextDelta(chatId, threadId, options, currentBatchMessageI
     .filter((message) => !currentBatchMessageIds.has(Number(message.messageId)))
     .slice(0, maxStored);
   // 2026-08-30：条数上限（maxStored，默认 50）挡不住字符体积。
-  // 实证：会客室是活跃群而 requireMention=true，鸦鸦越久没被 @、未读 delta 攒得越多；
+  // 实证：在一个活跃群里且 requireMention=true 时，bot 越久没被 @、未读 delta 攒得越多；
   // 8/29 那次攒到 49 条 / 8670 字符，整批被 Kimi 判 400 high risk。逐条验证过
   // 里面没有任何单句有罪（颜文字、"还不如杀了我"、图片单独发全部通过），
   // 是整包累加越过风控阈值：同一批内容切到 5689 字通过、5824 字被拒。
