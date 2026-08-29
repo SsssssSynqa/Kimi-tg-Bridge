@@ -16,7 +16,10 @@ const BRIDGE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const WORKDIR = path.resolve(BRIDGE_DIR, '..');
 const LIVE_PATH = path.join(BRIDGE_DIR, '.state', 'telegram-live.jsonl');
 const SESSION_FILE = path.join(BRIDGE_DIR, '.state', 'session.txt');
-const KIMI = '/Users/arthas/.kimi-code/bin/kimi';
+// 2026-08-30 开源脱敏：原来硬编码了本机用户名。从 HOME 派生，本机行为完全不变，
+// 别人 clone 下来也能直接跑；要装在别处就设 KIMI_PATH。
+const KIMI = process.env.KIMI_PATH
+  || `${process.env.HOME || ''}/.kimi-code/bin/kimi`;
 const REPLAY = 10;
 
 const C = {
