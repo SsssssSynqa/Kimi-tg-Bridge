@@ -1,16 +1,16 @@
 {
-  "name": "telegram-codex-bridge",
+  "name": "telegram-kimi-bridge",
   "version": "0.3.0",
-  "description": "A zero-dependency Telegram Bot API bridge for a persistent Codex app-server session, with a terminal window that shares the same live thread.",
+  "description": "A zero-dependency Telegram Bot API bridge for a persistent Kimi Code CLI session, with an optional tmux TUI that shares the same live session. Derived from Codex-tg-Bridge; the original Codex engines are still supported.",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SsssssSynqa/Codex-tg-Bridge.git"
+    "url": "git+https://github.com/HailSyner/Kimi-tg-Bridge.git"
   },
   "bugs": {
-    "url": "https://github.com/SsssssSynqa/Codex-tg-Bridge/issues"
+    "url": "https://github.com/HailSyner/Kimi-tg-Bridge/issues"
   },
-  "homepage": "https://github.com/SsssssSynqa/Codex-tg-Bridge#readme",
+  "homepage": "https://github.com/HailSyner/Kimi-tg-Bridge#readme",
   "bin": {
     "telegram-codex-bridge": "src/bridge.mjs"
   },

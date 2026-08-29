@@ -1,21 +1,29 @@
-# Telegram Codex Bridge
+# Telegram Kimi Bridge
 
-一个零依赖的 Telegram Bot API 桥，把 Telegram 机器人接到一个常驻的 `codex app-server` 会话上。
+一个零依赖的 Telegram Bot API 桥，把 Telegram 机器人接到一个常驻的 **Kimi Code CLI** 会话上——原有的 Codex 引擎也仍然可用。
 
-支持私聊、群聊、仅 @ 触发、增量群上下文、群消息成批回复、bot 接龙上限、发送限流、图片与文件附件、可选的私聊工具执行、需本人拍板的命令审批、崩溃安全的消息投递——以及在 daemon 模式下，让终端窗口和 Telegram 共用同一个活着的会话。
+支持私聊、群聊、仅 @ 触发、增量群上下文、群消息成批回复、bot 接龙上限、发送限流、图片与文件附件、可选的私聊工具执行、需本人拍板的命令审批、崩溃安全的消息投递。在 `tui` 模式下，Kimi 的交互界面常驻在一个 tmux 会话里，你可以随时 attach 进去——Telegram 和终端看到的是同一个正在运行的它。
 
 English documentation: [README.md](README.md).
 
+> **衍生自 [Codex-tg-Bridge](https://github.com/HailSyner/Codex-tg-Bridge)。**
+> 本项目最初是那座桥的一份拷贝，在原有 Codex `spawn` / `daemon` 两种引擎之外，
+> 增加了 Kimi Code CLI 引擎（`codexMode: "kimi"`）。
+> 传输层的全部工作——增量群上下文、成批回复、崩溃安全投递、审批模型、限流——都来自那里。
+> 如果你要的是 Codex 桥，请直接用上游项目。
+
 ## 这是什么
 
-Telegram Codex Bridge 让你用一个 Telegram 机器人作为常驻 Codex 会话的轻量前端。它面向个人自动化、小范围可信群组，以及 bot 之间的协作场景——如果你需要，还可以再开一个终端窗口，接进同一段对话。
+Telegram Kimi Bridge 让你用一个 Telegram 机器人作为常驻 Kimi Code CLI 会话的轻量前端。它面向个人自动化、小范围可信群组，以及 bot 之间的协作场景——如果你需要，还可以再开一个终端窗口，看着同一个会话。
 
 ## 运行要求
 
 - macOS、Linux 或任何能跑 Node.js 的机器
 - Node.js 20+
 - 从 [@BotFather](https://t.me/BotFather) 申请的 Telegram bot token
-- 同一台机器上已安装并登录 Codex
+- 同一台机器上已安装并登录 [Kimi Code CLI](https://github.com/MoonshotAI/kimi-code)
+  （或者 Codex——如果你要跑原有的 `codexMode` 引擎）
+- PATH 里有 `tmux`——仅 `kimiEngine: "tui"` 需要
 - 机器人要能收到你想让它收到的消息：
   - 想让它看到群里所有消息，就在 BotFather 里关掉 Privacy Mode。
   - 想让别的 bot 触发它，就打开 bot 之间的通信开关。
@@ -23,8 +31,8 @@ Telegram Codex Bridge 让你用一个 Telegram 机器人作为常驻 Codex 会�
 ## 快速开始
 
 ```bash
-git clone https://github.com/SsssssSynqa/Codex-tg-Bridge.git
-cd Codex-tg-Bridge
+git clone https://github.com/HailSyner/Kimi-tg-Bridge.git
+cd Kimi-tg-Bridge
 cp .env.example .env
 cp config.example.json config.json
 ```
@@ -38,7 +46,8 @@ TELEGRAM_BOT_TOKEN=1234567890:your-real-token
 编辑 `config.json`：
 
 - `allowedUserIds` 填你自己的 Telegram 数字用户 ID。
-- `workdir` 填 Codex 的工作目录。
+- `workdir` 填 CLI 的工作目录。
+- `codexMode` 设为 `"kimi"`，`kimiPath` 指向你的 `kimi` 可执行文件。
 - 群 ID 填进 `allowedGroups`。
 - 在你完全理解工具安全模型之前，`privateToolsEnabled` 保持 `false`。
 
@@ -59,8 +68,8 @@ npm start
 
 - `/start`：确认桥是通的。
 - `/status`：桥的模式、当前 thread、群数量，以及投递队列（等待中、在途、进死信的）。
-- `/session`：当前 Codex thread ID。
-- `/resume <thread-id>` 或 `/attach <thread-id>`：把桥切到已有的 Codex thread。
+- `/session`：当前会话 ID。
+- `/resume <session-id>` 或 `/attach <session-id>`：把桥切到已有的会话。
 - `/tools`：私聊工具模式是否开启、可写范围、网络权限，以及群聊只读规则。
 - `/new`：新建一个 thread，旧的 thread ID 会在本地留底。
 - `/retry_update <update-id>`：把一条进了死信队列的 Telegram update 放回重试队列。
@@ -97,8 +106,13 @@ npm start
 | `ownerUserId` | 谁可以用运维命令、审批按钮和群开关门指令。默认取 `allowedUserIds` 的第一个。 |
 | `mentionPatterns` | 额外的唤醒词。在 `requireMention` 的群里，消息含其中任意一个也算叫了它。 |
 | `gateCommandPrefix` | 群开关门指令的前缀，默认取 `botName`。 |
-| `workdir` | Codex 的工作目录。 |
-| `model`、`reasoningEffort`、`serviceTier` | Codex 的 turn 设置。 |
+| `workdir` | CLI 的工作目录。 |
+| `model` | 传给 CLI 的模型覆盖。`reasoningEffort` / `serviceTier` 仅对 Codex 引擎有效。 |
+| `kimiPath` | `kimi` 可执行文件路径。 |
+| `kimiEngine` | `"spawn"`（无头，每轮一个进程）或 `"tui"`（tmux 里常驻的交互界面）。 |
+| `tmuxSession` | 承载 Kimi TUI 的 tmux 会话名，仅 `kimiEngine: "tui"` 用。 |
+| `nativeVision` | 模型自己能读图就设 `true`；否则由视觉模型转写成文字。 |
+| `maxDeltaChars` | 群增量上下文的字符预算（默认 4000，`0` 关闭）。 |
 | `privateToolsEnabled` | 为 `true` 时，私聊可以让 Codex 在受限的 workspace-write 沙箱里干活。 |
 | `toolWritableRoots` | 私聊工具模式允许写入的绝对路径（或相对配置文件的路径）。 |
 | `toolNetworkAccess` | 私聊工具模式的网络权限，默认 `false`。 |
@@ -128,14 +142,14 @@ npm start
 除了 `.env`，你也可以让 token 完全不落盘：
 
 ```bash
-security add-generic-password -U -a bot-token -s com.example.telegram-codex-bridge -w 'YOUR_TOKEN'
+security add-generic-password -U -a bot-token -s com.example.kimi-bridge -w 'YOUR_TOKEN'
 ```
 
 然后在 `config.json` 里加：
 
 ```json
 {
-  "keychainService": "com.example.telegram-codex-bridge",
+  "keychainService": "com.example.kimi-bridge",
   "keychainAccount": "bot-token"
 }
 ```
@@ -144,101 +158,67 @@ security add-generic-password -U -a bot-token -s com.example.telegram-codex-brid
 
 ## 终端 ↔ Telegram：同一个会话
 
-这一节是让这个桥不像"一个 bot"、而像"一个能从两个地方找到的助手"的关键。
+正是这一部分，让这座桥不像一个机器人，而更像一个你能从两个地方够到的同一个助手。
 
-默认的 `codexMode: "spawn"` 下，桥自己起一个 `codex app-server --stdio` 子进程，那个子进程持有独立的内存态 thread。这时候你如果同时开着 Codex.app，或者在终端里跑 `codex --remote`，每一个都是各自独立的 Codex 实例，上下文会各走各的——哪怕它们读的是磁盘上同一个 rollout 文件。
+`codexMode: "kimi"` 下有两种引擎，由 `kimiEngine` 选择。
 
-而在 `codexMode: "daemon"` 下，桥只是一个长期运行的 `codex app-server --listen unix://PATH` 的客户端之一。所有 resume 同一个 thread id 的客户端共享同一份内存态 thread，daemon 会把事件（token 用量、消息增量、turn 完成）广播给所有客户端。你在 Telegram 里打字，终端里能看见；你在终端里打字，下一条 Telegram 消息接着这段对话往下走。
+### `kimiEngine: "spawn"`（默认）
 
-### 1. 装 daemon
-
-```bash
-cp launchd/com.example.codex-daemon.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.codex-daemon.plist
-```
-
-先把 plist 里的 `YOUR_USERNAME` 改掉。然后确认 daemon 起来了、socket 是单用户权限（0600）：
+无头模式，每轮起一个进程。每一轮执行：
 
 ```bash
-launchctl list | grep com.example.codex-daemon
-ls -la ~/.codex/app-server-control/app-server-control.sock
+kimi [--session <id>] -p <prompt> --output-format stream-json
 ```
 
-### 2. 让桥连过去
+从 stdout 读回两类 JSONL：
 
-```json
-{
-  "codexMode": "daemon",
-  "daemonSocketPath": ""
-}
+```
+{"role":"assistant","content":"..."}                        -> 回复正文
+{"role":"meta","type":"session.resume_hint","session_id":…}  -> 会话锚点
 ```
 
-留空就是默认的 `$CODEX_HOME/app-server-control/app-server-control.sock`。重启桥，然后确认 daemon 模式真的生效了：
+没有常驻子进程。真正把对话接下去的是那个 session id，桥会把它落盘，所以重启之后是
+**接着原来的会话**，而不是重新开一个。resume 一个已经不存在的会话时，CLI 会以非零码退出并在
+stderr 打印 `Session "<id>" not found.`——桥的 fail-closed 判定就钉在这句上，而不是默默开一个
+新会话把你的历史丢掉。
+
+简单、稳，但终端里什么都看不到。
+
+### `kimiEngine: "tui"`
+
+把每一轮**注入到一个常驻的交互式 Kimi TUI** 里，它活在 tmux 会话中（`tmuxSession`，默认 `skald-tg`）。
+你 attach 进那个 tmux，就能看到真实的界面——思考过程、工具调用、审批对话框——而 Telegram 谈的是同一个
+活着的会话。回复从该会话的 `wire.jsonl` 里捕获。
 
 ```bash
-# daemon 模式下，桥不应该有 codex app-server 子进程。
-pgrep -P "$(launchctl list | awk '/telegram-codex-bridge$/{print $1}')"
+tmux attach -t skald-tg
 ```
 
-输出为空就说明是 daemon 模式。桥日志里会写 `Codex daemon ready`；如果写的是 `Codex spawn ready`，说明还在 spawn 路径上。
+有两种对话框从 Telegram 那头是看不见的，桥替你处理：
 
-### 3. 给终端窗口配一条快捷命令
+- **工具审批**——转成一张带「同意 / 拒绝」按钮的 Telegram 卡片发给本人（见[命令审批](#命令审批)）。
+  没有这一层，一个需要审批的 TUI 轮次就会卡在只有键盘前才看得到的对话框上：她在等回复，它在等按键。
+- **缓存过期**——自动选择 *Continue as-is* 保住完整上下文，并记进日志，让这个选择是可见的。
 
-原始命令又长又容易敲错：
+同一轮最多重新注入三次就放弃；无上限重试只会在它的 pane 里刷出一堆一模一样的粘贴。
 
-```bash
-codex --remote unix:///Users/YOUR_USERNAME/.codex/app-server-control/app-server-control.sock
-```
+### 群上下文有字符预算
 
-在 `~/.zshrc`（或 `~/.bashrc`）里写一个 shell 函数，一个词就能打开那个连着 bot 同一个 thread 的终端窗口。名字随你的 bot 起：
+`recentGroupContextDelta` 同时受**条数**（`maxStoredMessages`）和**字符预算**
+（`maxDeltaChars`，默认 4000）两道限制。只限条数是不够的：在一个活跃群里且
+`requireMention: true` 时，长时间没被 @ 的 bot 会攒下很大的未读增量，而**一个过大的批次可能被上游
+内容过滤整个拒掉**。更糟的是这样一轮一旦进了会话历史，之后每个请求都带着它——包括压缩在内——
+足以把会话永久卡死。
 
-```bash
-# 打开 Telegram 桥的终端一侧：同一个 daemon，同一个 thread。
-mybot() {
-  codex --remote "unix://$HOME/.codex/app-server-control/app-server-control.sock" \
-    -s workspace-write \
-    --add-dir "$HOME/path/to/your/workspace" \
-    "$@"
-}
-```
+超出预算时丢掉**最旧**的未读、保住最近的，并把 `omitted` 置真，让模型知道前面还有没读到的消息，
+而不是以为自己看到了全部。`maxDeltaChars: 0` 可关闭该预算。
 
-`source ~/.zshrc` 之后，直接敲：
+### 原有的 Codex 引擎
 
-```bash
-mybot
-```
-
-**为什么要多加 `-s workspace-write --add-dir`？** 裸的 `codex --remote` attach 进去，拿到的是每个 thread 启动时的基线权限：`sandbox: 'read-only'`。它不走桥的 `ask()`，所以永远进不了 Telegram 私聊那条路径上的 `private-tools` 模式。不加这两个参数，终端窗口只能读不能写——同一个助手在 Telegram 上能写、在终端里不能写，会让人很困惑。把 `--add-dir` 指到和 `toolWritableRoots` 一样的目录，两边的可写范围就对齐了。
-
-审批策略刻意保持 TUI 自己的交互式默认。你人就坐在键盘前，危险命令该当场问你，而不是被静默放行，也不该变成一张要你去 Telegram 里找的卡片。
-
-如果你希望手敲那条长命令时也自动带上这些参数，可以包装 `codex` 本身，并且只对这一个 socket 生效（zsh）：
-
-```bash
-codex() {
-  local -a args=("$@")
-  local i
-  for (( i = 1; i <= $#; i++ )); do
-    if [[ "${args[i]}" == "--remote" && "${args[i+1]}" == "unix://$HOME/.codex/app-server-control/app-server-control.sock" ]]; then
-      set -- "$@" -s workspace-write --add-dir "$HOME/path/to/your/workspace"
-      break
-    fi
-  done
-  command codex "$@"
-}
-```
-
-其它任何 `codex` 用法——本地运行、连别的 `--remote`——都不受影响。
-
-### 4. 找到桥用的那个 thread
-
-在 TUI 里列出并 resume 桥正在用的 thread。认 `serviceName: "codex-telegram"`，或者直接读：
-
-```bash
-cat .state/session.txt
-```
-
-从此两边指向同一个内存态 Codex。
+`codexMode: "spawn"` 与 `codexMode: "daemon"` 继承自
+[Codex-tg-Bridge](https://github.com/HailSyner/Codex-tg-Bridge)，目前仍然可用——daemon 模式让
+Telegram 和 `codex --remote` 终端共用同一个活着的 `codex app-server` 线程。那套装法、它的
+LaunchAgent、Codex Desktop 侧边栏同步及其取舍，都在上游项目里有文档，这里不再重复。
 
 ### 终端 turn 的审批怎么走
 
@@ -250,22 +230,9 @@ cat .state/session.txt
 
 在这条规则存在之前，桥会默默拒掉 owner 自己终端会话里的审批：一句在键盘上敲的 `open ~/.codex` 会被连拒两次，而且没有任何解释。群聊 turn 不受影响——它们的 turn id 桥认识，保持硬只读。
 
-### Codex Desktop 侧边栏
-
-由无头 app-server 建的 thread 确实会出现在 Codex Desktop 的侧边栏里，但标题是机器生成的、预览是脏 prompt、排序还沉在底下。把 `"desktopSync"` 设成 `true`，桥会在每轮之后重写那一行：标题变成 `<botName> via Telegram`，预览变成最近一条消息，thread 顶到最前面。
-
-这会写 Codex 自己的本地状态数据库，所以默认关闭。所有失败路径都是尽力而为：如果某个 Codex 版本改了表结构，字段探测会直接禁用同步，而不是写进脏数据。消息文本会被编码成 hex blob 再 CAST 回 TEXT，聊天内容永远不经过 sqlite 的解析器。
-
-### 取舍
-
-- daemon 在上游 Codex 里还是 `experimental`。锁版本，升级后重测。
-- 默认的 unix socket 是单用户的（0600）。别开 `ws://0.0.0.0:PORT`，除非你同时配好了上游对应的 `--ws-auth`。
-- `/restart_daemon` 会让已连接的 TUI 掉线并报 `Connection reset without closing handshake`——Codex CLI 没有自动重连，得手动重开。桥自己会自动接回。
-- 回滚只有一行：把 `codexMode` 改回 `"spawn"` 再重启。daemon 的 LaunchAgent 可以用 `launchctl bootout` 单独停掉。
-
 ## 命令审批
 
-开了 `privateToolsEnabled` 之后，Codex 在跑命令、写文件之前会来问。桥把这些请求分成三档：
+开了 `privateToolsEnabled` 之后，CLI 在跑命令、写文件之前会来问。桥把这些请求分成三档：
 
 1. **自动批准**——只有无副作用的只读检查命令（`ls`、`cat`、`rg`、`git status/diff/log` 等），不能有管道、命令替换或重定向，且 cwd 在 `toolWritableRoots` 内。仅仅"在可写范围内"是不够的。
 2. **自动拒绝**——危险命令（递归删除、`sudo`、hard reset、force push、磁盘操作、破坏性 `launchctl`、管道进 shell、疑似 token 的文本）、只读或群聊 turn 里的一切写操作，以及畸形载荷。
@@ -309,10 +276,10 @@ cat .state/session.txt
 
 把 bot 拉进新群，通常意味着改 `config.json` 再重启。下面这几条仅 owner 可用的指令让你在群里当场搞定。前缀取自 `gateCommandPrefix`（默认是 `botName`），所以叫 `Codex` 的 bot 认这几条：
 
-- `/codex_on`——授权本群，默认保守（仅 @ 触发、不接未点名的 bot 消息、bot 接龙上限低）
-- `/codex_off`——撤销这层授权
-- `/codex_all`——本群所有消息都进
-- `/codex_quiet`——切回仅 @ 触发
+- `/<prefix>_on`——授权本群，默认保守（仅 @ 触发、不接未点名的 bot 消息、bot 接龙上限低）
+- `/<prefix>_off`——撤销这层授权
+- `/<prefix>_all`——本群所有消息都进
+- `/<prefix>_quiet`——切回仅 @ 触发
 
 动态授权存在 `.state/dynamic-groups.json`（0600），和 `allowedGroups` 是相互独立的两层。这些指令永远不改 `config.json`，也永远不会删掉静态配置的群。非 owner 发的会被一句话拒掉并消费掉；状态文件损坏时是 fail-closed，不会被静默覆盖重建。
 
@@ -334,7 +301,7 @@ cat .state/session.txt
 
 ## Prompt 协议和作用域隔离
 
-桥默认只用一个常驻 Codex thread，所以私聊、群聊和任何接进来的终端共享同一份历史。这正是 daemon 模式的意义——但也意味着风格和隐私的串味需要你自己管：
+桥默认只用一个常驻 CLI 会话，所以私聊、群聊和任何接进来的终端共享同一份历史。这正是 daemon 模式的意义——但也意味着风格和隐私的串味需要你自己管：
 
 - 稳定的 Telegram 规则写在工作区的 `AGENTS.md` 里，从 `AGENTS.example.md` 开始改。
 - 每轮的 prompt 刻意很短：一个模式标记（如 `TG_PRIVATE`、`TG_GROUP_BATCH`）加一段带当前消息的 JSON 载荷。
@@ -395,20 +362,20 @@ npm test        # 跑完整测试
 
 ## macOS LaunchAgent
 
-模板在 `launchd/com.example.telegram-codex-bridge.plist`。
+模板在 `launchd/com.example.kimi-bridge.plist`。
 
 先改路径，再安装：
 
 ```bash
-cp launchd/com.example.telegram-codex-bridge.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.telegram-codex-bridge.plist
-launchctl kickstart -k gui/$(id -u)/com.example.telegram-codex-bridge
+cp launchd/com.example.kimi-bridge.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.kimi-bridge.plist
+launchctl kickstart -k gui/$(id -u)/com.example.kimi-bridge
 ```
 
 查看状态：
 
 ```bash
-launchctl print gui/$(id -u)/com.example.telegram-codex-bridge
+launchctl print gui/$(id -u)/com.example.kimi-bridge
 ```
 
 `/restart_bridge` 能生效，靠的就是 `KeepAlive`：桥退出，launchd 几秒内把它拉起来。任何"退出即重启"的进程管理器（systemd、pm2 等）同理。

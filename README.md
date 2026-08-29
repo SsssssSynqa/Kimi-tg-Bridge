@@ -1,21 +1,30 @@
-# Telegram Codex Bridge
+# Telegram Kimi Bridge
 
-A small, zero-dependency Telegram Bot API bridge that connects a Telegram bot to a persistent `codex app-server` session.
+A small, zero-dependency Telegram Bot API bridge that connects a Telegram bot to a persistent **Kimi Code CLI** session — with the original Codex engines still supported.
 
-It supports private chats, group chats, mention-only mode, delta group context, batched group replies, bot-loop limits, outbound rate limiting, image and file attachments, optional private-chat tool execution, owner-approved command execution, crash-safe message delivery, and — in daemon mode — a terminal session that shares one live thread with Telegram.
+It supports private chats, group chats, mention-only mode, delta group context, batched group replies, bot-loop limits, outbound rate limiting, image and file attachments, optional private-chat tool execution, owner-approved command execution, and crash-safe message delivery. In `tui` mode the Kimi TUI stays alive in a tmux session you can attach to, so Telegram and your terminal look at the same running assistant.
 
 中文文档见 [README.zh-CN.md](README.zh-CN.md).
 
+> **Derived from [Codex-tg-Bridge](https://github.com/HailSyner/Codex-tg-Bridge).**
+> This project started as a copy of that bridge and adds a Kimi Code CLI engine
+> (`codexMode: "kimi"`) alongside the original Codex `spawn` / `daemon` modes.
+> All of the transport-level work — delta group context, batched replies,
+> crash-safe delivery, the approval model, rate limiting — comes from there.
+> If you want a Codex bridge, use the upstream project directly.
+
 ## What This Is
 
-Telegram Codex Bridge lets you run a Telegram bot as a lightweight front end for a persistent Codex session. It is designed for personal automation, small trusted groups, and bot-to-bot workflows where you want Codex available from Telegram — and, if you want it, from a terminal window attached to that same conversation.
+Telegram Kimi Bridge lets you run a Telegram bot as a lightweight front end for a persistent Kimi Code CLI session. It is designed for personal automation, small trusted groups, and bot-to-bot workflows where you want your CLI assistant available from Telegram — and, if you want it, from a terminal window showing the very same session.
 
 ## Requirements
 
 - macOS, Linux, or another machine that can run Node.js
 - Node.js 20+
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
-- Codex installed and authenticated on the same machine
+- [Kimi Code CLI](https://github.com/MoonshotAI/kimi-code) installed and authenticated on the same machine
+  (or Codex, if you want to run one of the original `codexMode` engines)
+- `tmux` on PATH — only for `kimiEngine: "tui"`
 - The Telegram bot must be able to receive the messages you want:
   - Disable BotFather Privacy Mode if the bot should see all group messages.
   - Enable bot-to-bot communication if you want another bot to trigger it.
@@ -23,8 +32,8 @@ Telegram Codex Bridge lets you run a Telegram bot as a lightweight front end for
 ## Quick Start
 
 ```bash
-git clone https://github.com/SsssssSynqa/Codex-tg-Bridge.git
-cd Codex-tg-Bridge
+git clone https://github.com/HailSyner/Kimi-tg-Bridge.git
+cd Kimi-tg-Bridge
 cp .env.example .env
 cp config.example.json config.json
 ```
@@ -38,7 +47,8 @@ TELEGRAM_BOT_TOKEN=1234567890:your-real-token
 Edit `config.json`:
 
 - Set `allowedUserIds` to your Telegram numeric user ID.
-- Set `workdir` to the folder where Codex should run.
+- Set `workdir` to the folder where the CLI should run.
+- Set `codexMode` to `"kimi"` and point `kimiPath` at your `kimi` binary.
 - Add any group chat IDs under `allowedGroups`.
 - Leave `privateToolsEnabled` as `false` until you understand the tool safety model.
 
@@ -59,17 +69,17 @@ Private-chat commands:
 
 - `/start`: confirm the bridge is reachable.
 - `/status`: bridge mode, active thread, group counts, and the delivery queue (pending, in-flight, dead-lettered).
-- `/session`: show the active Codex thread ID.
-- `/resume <thread-id>` or `/attach <thread-id>`: switch the bridge to an existing Codex thread.
+- `/session`: show the active session ID.
+- `/resume <session-id>` or `/attach <session-id>`: switch the bridge to an existing session.
 - `/tools`: show whether private tool mode is enabled, writable roots, network mode, and the group-chat read-only rule.
-- `/new`: start a fresh Codex thread while preserving the previous thread ID locally.
+- `/new`: start a fresh session while preserving the previous session ID locally.
 - `/retry_update <update-id>`: put one dead-lettered Telegram update back in the queue.
 
 Owner-only operations:
 
 - `/reload_config`: re-read `config.json` in place and hot-swap `allowedGroups`, `mentionPatterns`, and `mentionContext`. Static fields (`codexMode`, `model`, `timeoutMs`, `keychain*`) still need a restart.
 - `/restart_bridge`: exit cleanly so the process manager restarts the bridge. The replacement process edits the original "restarting" message into a confirmation.
-- `/restart_daemon`: restart the Codex daemon via `launchctl kickstart` without stopping the bridge (macOS + daemon mode only).
+- `/restart_daemon`: restart the Codex daemon via `launchctl kickstart` without stopping the bridge (macOS + Codex daemon mode only).
 - `/force_restart_bridge`, `/force_restart_daemon`: same, but allowed while a turn is in flight. Without `force_`, both refuse rather than interrupting work.
 
 Group commands (see [Dynamic Group Authorization](#dynamic-group-authorization)):
@@ -97,16 +107,21 @@ See `config.example.json` for the full set. The options that matter most:
 | `ownerUserId` | Who may use ops commands, approval buttons, and gate commands. Defaults to the first entry of `allowedUserIds`. |
 | `mentionPatterns` | Extra wake words. In a `requireMention` group, a message containing one of these counts as addressing the bot. |
 | `gateCommandPrefix` | Prefix for the group gate commands. Defaults to `botName`. |
-| `workdir` | Working directory for Codex. |
-| `model`, `reasoningEffort`, `serviceTier` | Codex turn settings. |
-| `privateToolsEnabled` | When `true`, private chats can run Codex in restricted workspace-write mode. |
+| `workdir` | Working directory for the CLI. |
+| `model` | Model override passed to the CLI. `reasoningEffort` / `serviceTier` apply to the Codex engines only. |
+| `privateToolsEnabled` | When `true`, private chats can run the CLI in restricted workspace-write mode. |
 | `toolWritableRoots` | Absolute (or config-relative) paths private tool mode may write inside. |
 | `toolNetworkAccess` | Network access for private tool mode. Default `false`. |
-| `codexMode` | `"spawn"` (own child process) or `"daemon"` (shared session — see below). |
+| `codexMode` | `"kimi"` (Kimi Code CLI), or the inherited Codex engines `"spawn"` / `"daemon"`. |
+| `kimiPath` | Path to the `kimi` binary. |
+| `kimiEngine` | `"spawn"` (headless, one process per turn) or `"tui"` (persistent TUI in tmux). |
+| `tmuxSession` | tmux session hosting the Kimi TUI. `kimiEngine: "tui"` only. |
+| `nativeVision` | `true` if the model reads images itself; otherwise a vision model transcribes them. |
+| `maxDeltaChars` | Character budget for group delta context (default 4000, `0` disables). |
 | `daemonSocketPath` | Override the daemon socket. Empty means `$CODEX_HOME/app-server-control/app-server-control.sock`. |
 | `daemonLaunchdLabel` | launchd label used by `/restart_daemon`. |
 | `approvalTimeoutMs` | How long an approval card waits before auto-declining. Default 60000. |
-| `desktopSync` | Opt-in: rewrite this thread's row in the Codex Desktop sidebar. |
+| `desktopSync` | Codex engines only. Opt-in: rewrite this thread's row in the Codex Desktop sidebar. |
 | `liveLogEnabled` | Opt-in: write a local JSONL transcript of every message in and out. |
 | `outboxEnabled` | Opt-in: let local scripts send messages by appending to a file. |
 
@@ -128,14 +143,14 @@ Per-group options:
 Instead of `.env`, you can keep the token out of the filesystem entirely:
 
 ```bash
-security add-generic-password -U -a bot-token -s com.example.telegram-codex-bridge -w 'YOUR_TOKEN'
+security add-generic-password -U -a bot-token -s com.example.kimi-bridge -w 'YOUR_TOKEN'
 ```
 
 Then add to `config.json`:
 
 ```json
 {
-  "keychainService": "com.example.telegram-codex-bridge",
+  "keychainService": "com.example.kimi-bridge",
   "keychainAccount": "bot-token"
 }
 ```
@@ -146,126 +161,87 @@ Then add to `config.json`:
 
 This is the part that makes the bridge feel less like a bot and more like one assistant you can reach from two places.
 
-In the default `codexMode: "spawn"`, the bridge starts its own `codex app-server --stdio` child. That child owns an isolated in-memory thread. If you also open Codex.app or run `codex --remote` in a terminal, each one gets its own Codex instance with diverging context — even when they read the same rollout file on disk.
+With `codexMode: "kimi"` there are two engines, selected by `kimiEngine`.
 
-In `codexMode: "daemon"`, the bridge is just one client of a long-running `codex app-server --listen unix://PATH`. Every client that resumes the same thread id shares one in-memory thread, and the daemon broadcasts events — token usage, message deltas, completions — to all of them. Type in Telegram, watch it appear in the terminal. Type in the terminal, and the next Telegram message continues that same conversation.
+### `kimiEngine: "spawn"` (default)
 
-### 1. Install the daemon
-
-```bash
-cp launchd/com.example.codex-daemon.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.codex-daemon.plist
-```
-
-Edit `YOUR_USERNAME` in the plist first. Then verify the daemon is up and the socket is single-user (mode 0600):
+Headless, one process per turn. Each turn runs:
 
 ```bash
-launchctl list | grep com.example.codex-daemon
-ls -la ~/.codex/app-server-control/app-server-control.sock
+kimi [--session <id>] -p <prompt> --output-format stream-json
 ```
 
-### 2. Point the bridge at it
+and reads two kinds of JSONL lines back from stdout:
 
-```json
-{
-  "codexMode": "daemon",
-  "daemonSocketPath": ""
-}
+```
+{"role":"assistant","content":"..."}                        -> the reply
+{"role":"meta","type":"session.resume_hint","session_id":…}  -> the session anchor
 ```
 
-Empty means the default `$CODEX_HOME/app-server-control/app-server-control.sock`. Restart the bridge, then confirm daemon mode is really live:
+There is no long-lived child process. The session id is what carries the conversation
+forward, and the bridge persists it so a restart resumes the same session instead of
+starting a new one. Resuming a session that no longer exists exits non-zero with
+`Session "<id>" not found.` — the bridge keys its fail-closed detection on exactly that,
+rather than silently opening a fresh session and losing your history.
+
+Simple and robust, but your terminal shows nothing.
+
+### `kimiEngine: "tui"`
+
+Turns are injected into a **persistent interactive Kimi TUI** running inside a tmux
+session (`tmuxSession`, default `skald-tg`). Attach to that tmux and you see the real
+interface — thinking, tool calls, approval dialogs — while Telegram talks to the same
+live session. Replies are captured from the session's `wire.jsonl`.
 
 ```bash
-# In daemon mode the bridge has NO codex app-server child.
-pgrep -P "$(launchctl list | awk '/telegram-codex-bridge$/{print $1}')"
+tmux attach -t skald-tg
 ```
 
-Empty output means daemon mode. The bridge log says `Codex daemon ready`; `Codex spawn ready` means you are still on the spawn path.
+Two dialogs are invisible from Telegram and are handled for you:
 
-### 3. Add a shortcut command for the terminal window
+- **Tool approval** — forwarded to the owner as a Telegram card with Approve / Decline
+  buttons (see [Approval Requests](#approval-requests)). Without this a TUI turn needing
+  approval would hang on a dialog only visible at the keyboard.
+- **Cache expiry** — answered automatically with *Continue as-is*, preserving the full
+  context, and logged so the choice is visible.
 
-The raw invocation is long and easy to get wrong:
+A turn is re-injected at most three times before the bridge gives up; unbounded retries
+would flood the pane with identical pastes.
 
-```bash
-codex --remote unix:///Users/YOUR_USERNAME/.codex/app-server-control/app-server-control.sock
-```
+### Group context has a character budget
 
-Put a shell function in `~/.zshrc` (or `~/.bashrc`) so one word opens the terminal window attached to the same thread your bot is talking on. Name it after your bot:
+`recentGroupContextDelta` is capped by **both** a message count (`maxStoredMessages`)
+and a character budget (`maxDeltaChars`, default 4000). Count alone is not enough: in an
+active group with `requireMention: true`, a bot that has not been mentioned for a while
+accumulates a large unread delta, and one oversized batch can be rejected outright by an
+upstream content filter. Worse, once such a turn lands in the session history every later
+request carries it — including compaction — which can wedge the session permanently.
 
-```bash
-# Open the terminal side of the Telegram bridge: same daemon, same thread.
-mybot() {
-  codex --remote "unix://$HOME/.codex/app-server-control/app-server-control.sock" \
-    -s workspace-write \
-    --add-dir "$HOME/path/to/your/workspace" \
-    "$@"
-}
-```
+When the budget is exceeded the **oldest** unread messages are dropped, the most recent
+are kept, and `omitted` is set so the model knows earlier messages exist rather than
+assuming it saw everything. Set `maxDeltaChars: 0` to disable the budget.
 
-Reload with `source ~/.zshrc`, then just type:
+### The original Codex engines
 
-```bash
-mybot
-```
-
-**Why the extra `-s workspace-write --add-dir`?** A bare `codex --remote` attach inherits the baseline every thread starts with: `sandbox: 'read-only'`. It does not go through the bridge's `ask()`, so it never reaches `private-tools` mode the way a Telegram private-chat turn does. Without those two flags, the terminal window can read but not write, which is confusing when the same assistant can write when you message it on Telegram. Point `--add-dir` at the same directory as your `toolWritableRoots` to give both sides the same reach.
-
-Approval policy is deliberately left at the TUI's own interactive default. You are sitting at the keyboard, so a risky command should ask *you*, right there — not silently auto-approve, and not turn into a Telegram card you have to go find.
-
-If you prefer to keep the flags implicit even when you type the long command by hand, wrap `codex` itself and only touch this one socket (zsh):
-
-```bash
-codex() {
-  local -a args=("$@")
-  local i
-  for (( i = 1; i <= $#; i++ )); do
-    if [[ "${args[i]}" == "--remote" && "${args[i+1]}" == "unix://$HOME/.codex/app-server-control/app-server-control.sock" ]]; then
-      set -- "$@" -s workspace-write --add-dir "$HOME/path/to/your/workspace"
-      break
-    fi
-  done
-  command codex "$@"
-}
-```
-
-Any other `codex` usage — local runs, a different `--remote` target — is untouched.
-
-### 4. Find the bridge's thread
-
-Inside the TUI, list and resume the thread the bridge is using. Look for `serviceName: "codex-telegram"`, or read the id directly:
-
-```bash
-cat .state/session.txt
-```
-
-From then on, both surfaces target the same in-memory Codex.
+`codexMode: "spawn"` and `codexMode: "daemon"` are inherited from
+[Codex-tg-Bridge](https://github.com/HailSyner/Codex-tg-Bridge) and still work — daemon
+mode shares one live `codex app-server` thread between Telegram and a `codex --remote`
+terminal. That setup, its LaunchAgent, the Codex Desktop sidebar sync and its trade-offs
+are documented in the upstream project; they are not repeated here.
 
 ### How approvals behave for terminal turns
 
-The bridge receives approval requests for *every* turn on the shared thread, including turns you started in the terminal. It deliberately does not answer those as if they were its own:
+In `tui` mode the bridge sees approval requests for *every* turn in the shared session, including turns you started at the keyboard. It deliberately does not answer those as if they were its own:
 
 - A dangerous command is still refused outright, whoever started it.
 - A malformed file-change payload is refused, because a blank card is not a decision anyone can make.
 - Everything else from a turn the bridge did not start is forwarded to the owner as a Telegram card — never auto-approved, even when every target is inside `toolWritableRoots`.
 
-Before this rule existed, the bridge silently declined approvals belonging to the owner's own terminal session, and a plain `open ~/.codex` typed at the keyboard would be refused twice with no explanation. Group turns are unaffected: their turn ids are known to the bridge and stay hard read-only.
-
-### Codex Desktop sidebar
-
-Threads created by a headless app-server do appear in the Codex Desktop sidebar, but with a machine-generated title, the raw prompt as a preview, and no useful sort position. Set `"desktopSync": true` and the bridge rewrites that row after each turn: the title becomes `<botName> via Telegram`, the preview becomes the latest message, and the thread floats to the top of the recency list.
-
-This writes to Codex's own local state database, which is why it is opt-in. It is best-effort in every failure path: if a Codex release changes that schema, the column probe disables the sync instead of writing garbage. Message text is encoded as a hex blob and cast back to TEXT, so chat content never passes through the sqlite parser.
-
-### Trade-offs
-
-- The daemon is `experimental` in upstream Codex. Pin a version and re-test after upgrades.
-- The default unix socket is single-user (mode 0600). Do not expose `ws://0.0.0.0:PORT` unless you also configure the matching `--ws-auth` mode upstream.
-- `/restart_daemon` drops any attached TUI with `Connection reset without closing handshake` — the Codex CLI has no auto-reconnect. Restart it by hand. The bridge itself reconnects on its own.
-- Rollback is one line: set `codexMode` back to `"spawn"` and restart. The daemon LaunchAgent can be stopped separately with `launchctl bootout`.
+Before this rule existed, the bridge silently declined approvals belonging to the owner's own terminal session, and a harmless command typed at the keyboard would be refused twice with no explanation. Group turns are unaffected: their turn ids are known to the bridge and stay hard read-only.
 
 ## Approval Requests
 
-When `privateToolsEnabled` is on, Codex asks before running commands or writing files. The bridge sorts those requests into three buckets:
+When `privateToolsEnabled` is on, the CLI asks before running commands or writing files. The bridge sorts those requests into three buckets:
 
 1. **Auto-approved** — only side-effect-free inspection commands (`ls`, `cat`, `rg`, `git status/diff/log`, …) with no shell composition, substitution or redirection, running inside `toolWritableRoots`. Being inside the roots is not by itself enough.
 2. **Auto-declined** — dangerous commands (recursive deletion, `sudo`, hard reset, force push, disk operations, destructive `launchctl`, piping into a shell, token-shaped text), anything during a read-only or group turn, and malformed payloads.
@@ -278,7 +254,7 @@ Details worth knowing:
 - There is no "approve for the rest of this turn". Every request needs its own tap.
 - Unanswered cards auto-decline after `approvalTimeoutMs` (default 60s) and the card is edited to say so. If the daemon connection drops or the bridge force-restarts while a card is pending, it is edited to say it is no longer valid rather than being left looking actionable.
 - Command and path text is redacted for common secret shapes (OpenAI/Anthropic keys, GitHub tokens, AWS keys, Bearer tokens, JWTs, PEM blocks, URL credentials, generic `key=value` pairs) before it leaves the machine.
-- In spawn mode there is no asynchronous approval channel, so file changes are declined rather than silently approved. Use daemon mode if you want the buttons.
+- In `kimiEngine: "spawn"` there is no asynchronous approval channel, so file changes are declined rather than silently approved. Use `tui` mode if you want the buttons.
 
 ## Group Context: Delta Delivery
 
@@ -307,12 +283,12 @@ Delivery is intentionally at-least-once. A rare duplicate outbound message is st
 
 ## Dynamic Group Authorization
 
-Adding the bot to a new group normally means editing `config.json` and restarting. These owner-only commands do it from inside the group, in real time. The prefix comes from `gateCommandPrefix` (defaulting to `botName`), so a bot named `Codex` answers to:
+Adding the bot to a new group normally means editing `config.json` and restarting. These owner-only commands do it from inside the group, in real time. The prefix comes from `gateCommandPrefix` (defaulting to `botName`), so a bot named `Kimi` answers to:
 
-- `/codex_on` — authorize this group, with conservative defaults (mention-only, no unaddressed bot messages, low bot-loop limit)
-- `/codex_off` — remove that authorization
-- `/codex_all` — read every message in this group
-- `/codex_quiet` — back to mention-only
+- `/<prefix>_on` — authorize this group, with conservative defaults (mention-only, no unaddressed bot messages, low bot-loop limit)
+- `/<prefix>_off` — remove that authorization
+- `/<prefix>_all` — read every message in this group
+- `/<prefix>_quiet` — back to mention-only
 
 Dynamic authorizations live in `.state/dynamic-groups.json` (0600) and are a separate layer from `allowedGroups`. These commands never edit `config.json` and never remove a statically configured group. A non-owner attempt is consumed with a short refusal, and a corrupt state file fails closed rather than being silently replaced.
 
@@ -334,7 +310,7 @@ This is a remote-control surface. Keep `allowedUserIds` strict, keep your bot to
 
 ## Prompt Protocol And Scope Isolation
 
-The bridge uses a single persistent Codex thread by default, so private chats, group chats and any attached terminal share one history. That is the point of daemon mode — but it means style and privacy bleed are your responsibility:
+The bridge uses a single persistent CLI session by default, so private chats, group chats and any attached terminal share one history. That is the point of daemon mode — but it means style and privacy bleed are your responsibility:
 
 - Stable Telegram rules live in your workspace `AGENTS.md`; start from `AGENTS.example.md`.
 - Per-turn prompts are intentionally small: a mode marker such as `TG_PRIVATE` or `TG_GROUP_BATCH` plus a JSON payload with the current message(s).
@@ -353,7 +329,7 @@ Important Telegram limitation: the bot can only remember messages Telegram actua
 
 ## Attachments
 
-Telegram `photo` messages and image documents are downloaded into `telegram-images/` and passed to Codex as `localImage` inputs.
+Telegram `photo` messages and image documents are downloaded into `telegram-images/` and passed to the CLI as `localImage` inputs.
 
 Regular files are downloaded into `telegram-files/`. The bridge includes file metadata, the local path, and any extractable text preview in the prompt.
 
@@ -395,20 +371,20 @@ Never commit `.env`.
 
 ## macOS LaunchAgent
 
-A LaunchAgent template is included in `launchd/com.example.telegram-codex-bridge.plist`.
+A LaunchAgent template is included in `launchd/com.example.kimi-bridge.plist`.
 
 Edit paths first, then install:
 
 ```bash
-cp launchd/com.example.telegram-codex-bridge.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.telegram-codex-bridge.plist
-launchctl kickstart -k gui/$(id -u)/com.example.telegram-codex-bridge
+cp launchd/com.example.kimi-bridge.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.kimi-bridge.plist
+launchctl kickstart -k gui/$(id -u)/com.example.kimi-bridge
 ```
 
 Check status:
 
 ```bash
-launchctl print gui/$(id -u)/com.example.telegram-codex-bridge
+launchctl print gui/$(id -u)/com.example.kimi-bridge
 ```
 
 `KeepAlive` is what makes `/restart_bridge` work: the bridge exits, launchd starts it again within seconds. Any supervisor that restarts on exit (systemd, pm2, …) works the same way.
@@ -421,7 +397,7 @@ launchctl print gui/$(id -u)/com.example.telegram-codex-bridge
 - Group-wide `allowAllBotUsers` can create loops. Use it temporarily or with a strict `maxConsecutiveBotMessages`.
 - Do not set `toolWritableRoots` to your home directory or filesystem root.
 - `liveLogEnabled` writes plaintext chat content to disk. It is off by default for a reason.
-- `desktopSync` writes into Codex's own state database. Leave it off unless you want the sidebar row.
+- `desktopSync` (Codex engines only) writes into Codex's own state database. Leave it off unless you want the sidebar row.
 
 ## Troubleshooting
 
