@@ -1,6 +1,6 @@
-// 鸦鸦的精炼续窗（2026-08-16）。
+// 精炼续窗（refined carryover）。
 //
-// 为什么是"写文件 + 让他自己读"，不是像狐狐那样重建上下文
+// 为什么是"写文件 + 让 agent 自己读"，而不是直接重建上下文
 // ----------------------------------------------------------
 // 实测（2026-08-16）：Kimi 的 `context.apply_compaction` 只带一个 summary 字符串。
 // 手写一条追加进 wire.jsonl，内容进得去（他会当成自己的工作笔记采信，复述出了
@@ -22,7 +22,13 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const SRC_DIR = path.dirname(fileURLToPath(import.meta.url));
-const REFINE_SCRIPT = path.resolve(SRC_DIR, '..', '..', '换窗', 'kimi_refine.py');
+// The extractor ships with the repo. It used to be resolved to a sibling
+// directory *outside* the checkout, which worked only on the machine it was
+// written on: anyone cloning this repo got a carryover that could never run,
+// and six tests that always failed. KIMI_REFINE_SCRIPT still allows pointing
+// at a private variant without editing the source.
+const REFINE_SCRIPT = process.env.KIMI_REFINE_SCRIPT
+  || path.resolve(SRC_DIR, '..', 'scripts', 'kimi_refine.py');
 
 /** 跑 kimi_refine.py，拿回统计 + 摘录正文。 */
 export function buildCarryover(wirePath, { targetTokens, tailEvents, script = REFINE_SCRIPT } = {}) {

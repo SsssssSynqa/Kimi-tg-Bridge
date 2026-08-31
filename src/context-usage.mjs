@@ -1,6 +1,7 @@
 // Context-usage watcher for the Kimi session behind Skald.
 //
-// Synqa, 2026-08-15: 「通知，然后90%再通知一次，我/new的时候再写交接然后直接换」
+// Operator's rule: notify at the first threshold, notify once more at 90%,
+// and never block — the swap itself stays a manual decision.
 //
 // Deliberately powerless: it reads, it reports, and that is all. It never blocks
 // a turn, never writes a handoff on its own, and never switches a session.
@@ -87,10 +88,10 @@ export function crossedThresholds(percent, alreadyNotified, thresholds = DEFAULT
     .sort((a, b) => a - b);
 }
 
-export function formatContextAlert({ percent, threshold, sessionId, tokensLabel }) {
+export function formatContextAlert({ percent, threshold, sessionId, tokensLabel, agentName = 'The agent' }) {
   const head = threshold >= 90
-    ? `🔴 鸦鸦的上下文到 ${threshold}% 了（现在 ${percent}%）`
-    : `🟡 鸦鸦的上下文到 ${threshold}% 了（现在 ${percent}%）`;
+    ? `🔴 ${agentName} 的上下文到 ${threshold}% 了（现在 ${percent}%）`
+    : `🟡 ${agentName} 的上下文到 ${threshold}% 了（现在 ${percent}%）`;
   const size = tokensLabel ? `\n用量：${tokensLabel}` : '';
   const tail = threshold >= 90
     ? '\n\n再往上就该丢东西了。想换的时候发 /new —— 他会先写好交接再换。'

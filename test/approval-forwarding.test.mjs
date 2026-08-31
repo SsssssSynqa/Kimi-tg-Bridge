@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import { KimiCliClient } from '../src/kimi-client.mjs';
 
-// Synqa's call (2026-08-06): "权限全都转发到tg" — every approval dialog must
+// Product rule: every approval dialog must
 // reach her phone, because the TUI menu is invisible from Telegram. Before this,
 // a turn that needed approval hung forever: she waited for a reply, he waited
 // for a keypress.

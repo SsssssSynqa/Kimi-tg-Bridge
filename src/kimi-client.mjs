@@ -99,7 +99,7 @@ function resolveFileRelay(text, log = () => {}) {
 
 // How many times a TUI turn may be re-injected before the bridge gives up.
 // Unbounded retries turn a downstream fault into a flood of identical pastes
-// in Skald's pane, which is noise for him and alarming for Synqa.
+// in the agent's pane, which is noise for it and alarming for the operator.
 const MAX_INJECT_RETRIES = 3;
 
 // KimiCliClient drives the Kimi Code CLI in headless prompt mode. Unlike the
@@ -127,7 +127,7 @@ export class KimiCliClient {
     onReady,
     onThreadChange,
     onSecurityEvent,
-    // Forwards a tool-approval request to Synqa and resolves 'accept'/'decline'.
+    // Forwards a tool-approval request to the operator and resolves 'accept'/'decline'.
     // Without it a TUI turn that needs approval hangs on a dialog only visible
     // in the terminal — she waits for a reply, he waits for a keypress.
     requestUserApproval = null,
@@ -145,7 +145,7 @@ export class KimiCliClient {
     this.timeoutMs = timeoutMs;
     // engine 'tui': turns are injected into a persistent interactive kimi TUI
     // living in a tmux session (the visible-body architecture of the sylux
-    // bridge). Synqa attaches to that tmux and sees Skald's real interface —
+    // bridge). The operator attaches to that tmux and sees the agent's real interface —
     // thinking, tool calls, everything. Replies are captured from the
     // session's wire.jsonl. engine 'spawn': headless one-process-per-turn.
     this.engine = engine === 'tui' ? 'tui' : 'spawn';
@@ -540,7 +540,7 @@ export class KimiCliClient {
   }
 
   // Translate a kimi approval request into the shape the bridge's Telegram
-  // approval card already speaks (built for Codex), ask Synqa, then type her
+  // approval card already speaks (built for another CLI), ask the operator, then type their
   // answer into the TUI menu: 1 = approve once, 3 = reject. There is
   // deliberately no "approve for this session" — she asked for every request to
   // reach her, so every request costs one tap.
@@ -684,7 +684,7 @@ export class KimiCliClient {
     if (!wire || !fs.existsSync(wire)) throw new Error('Kimi session wire.jsonl not found; cannot capture the reply');
 
     // Wait (bounded) for the composer to be free of half-typed text so the
-    // injected message does not splice into whatever Synqa is typing, and for
+    // injected message does not splice into whatever the operator is typing, and for
     // any queued sends to drain — injecting into a busy TUI only lengthens its
     // queue, it does not start a turn.
     const composerDeadline = Date.now() + 20000;
@@ -758,7 +758,7 @@ export class KimiCliClient {
         }
         continue;
       }
-      // Blocked on an approval dialog: ask Synqa, type her answer back, and do
+      // Blocked on an approval dialog: ask the operator, type the answer back, and do
       // not count the time she took against this turn's timeout — nor mistake
       // the pause for a dropped keystroke.
       if (state.pendingApproval) {

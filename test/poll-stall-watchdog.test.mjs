@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { createPollStallWatchdog } from '../src/poll-stall-watchdog.mjs';
 
-// Synqa's call (2026-08-15): 全家 TG 桥体检。Skald 在 14:26 报了一次
+// Origin: a bridge health review. The agent reported once at 14:26
 // "poll failed; retrying in 3s: The operation was aborted due to timeout"，
 // 之后 30+ 分钟零日志、零网络流量、getUpdates 探测无反应 —— 进程活着但聋了。
 // undici 的 keep-alive 连接池在 abort 之后会留下坏 socket，下一个 fetch

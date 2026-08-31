@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// skald-terminal — 史官的终端对话窗口（syner-terminal 同款形态）。
+// skald-terminal — a plain terminal chat window for the agent.
 // 一个普通的对话界面：你打字他回答；TG 侧的消息和他的回复实时流进同一个画面，
 // 混在一条时间线里。不分屏，没有 tmux。
 //

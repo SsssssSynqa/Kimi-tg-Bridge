@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import { buildHandoffPrompt, handoffFilePath, writeHandoff } from '../src/handoff.mjs';
 
-// Synqa, 2026-08-15: 「我/new的时候再写交接然后直接换」
+// Operator's rule: write the handoff note at /new time, then swap.
 //
 // /new is destructive and one-way: the moment the new session starts, whatever
 // was only in the old window is gone. So the handoff is written FIRST, saved to

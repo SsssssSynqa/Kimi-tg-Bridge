@@ -631,15 +631,15 @@ function makeCodexClient() {
       nativeVision: config.nativeVision === true,
       engine: config.kimiEngine || 'spawn',
       tmuxSession: config.kimiTmuxSession || 'skald-tg',
-      // Synqa's call (2026-08-06): every approval goes to Telegram. The TUI
+      // Product rule: every approval goes to Telegram. The TUI
       // dialog is invisible from a phone, so an unforwarded request is a turn
       // that silently waits forever.
       requestUserApproval: forwardApprovalToTelegram,
-      // Synqa's call (2026-08-26): cache expiry must keep the one complete
+      // Product rule: cache expiry must keep the one complete
       // session, continue without compaction, and tell her what happened.
       onCacheHintContinue: () => sendMessage(
         ownerUserId,
-        '鸦鸦检测到 Kimi 的 Cache expired 提示，已按你的设置保留完整上下文继续；本次没有 compact。',
+        `${config.botName} 检测到 Kimi 的 Cache expired 提示，已按配置保留完整上下文继续；本次没有 compact。`,
       ),
     });
   }
@@ -685,7 +685,7 @@ async function telegramOnce(method, params = {}) {
 }
 
 // 2026-08-15: one timed-out sendMessage used to cost a whole reply — Kimi's
-// text stayed in the terminal and Synqa got nothing. Transport faults are
+// text stayed in the terminal and the operator got nothing. Transport faults are
 // absorbed here so they never reach the durable layer, which "recovers" by
 // regenerating the entire turn.
 // onAttempt fires before every attempt so the poll watchdog can restart its
@@ -1064,7 +1064,7 @@ async function generateGroupReplies(batch, options) {
         outputSchema: GROUP_REPLY_SCHEMA,
         // Silence is a valid group outcome (mention-only): an empty turn must
         // settle as "no replies", not as a failure that retries the same batch
-        // until it dead-letters and pages Synqa.
+        // until it dead-letters and pages the operator.
         allowEmpty: true,
       }),
       0,
@@ -1629,7 +1629,7 @@ async function processPrivateMessage(message, text, context, images = [], files 
     const filled = Math.round(reading.percent / 5);
     const bar = '█'.repeat(Math.max(0, filled)) + '░'.repeat(Math.max(0, 20 - filled));
     await sendMessage(chatId, [
-      '🐦‍⬛ 鸦鸦的上下文',
+      `🧠 ${config.botName} 的上下文`,
       `${bar} ${reading.percent}%`,
       reading.label || '',
       `session ${sessionId || '未知'}`,
@@ -1667,7 +1667,7 @@ async function processPrivateMessage(message, text, context, images = [], files 
 
   const newThreadMatch = text.match(/^\/(force_)?(new|refine)$/i);
   if (newThreadMatch) {
-    // Synqa (2026-08-15): 「我/new的时候再写交接然后直接换」。
+    // Operator's rule: write the handoff note at /new time, then swap.
     // Switching is one-way — whatever lived only in the old window dies with it.
     // So: write the handoff, put it on disk, and only then switch. If it cannot
     // be written we do NOT switch; /force_new is the deliberate way past that.
@@ -1683,7 +1683,7 @@ async function processPrivateMessage(message, text, context, images = [], files 
 
     if (!forceSwitch) {
       try {
-        await sendMessage(chatId, '📝 先让鸦鸦写交接，写完再换…');
+        await sendMessage(chatId, `📝 先让 ${config.botName} 写交接，写完再换…`);
         const { filePath, text: handoffText } = await writeHandoffNow(chatId);
         handoffPath = filePath;
         await sendMessage(chatId, handoffMessage(filePath, handoffText));
@@ -2377,7 +2377,7 @@ function dispatchDurableUpdates() {
 // Main loop
 // ---------------------------------------------------------------------------
 
-// Synqa (2026-08-15): 「通知，然后90%再通知一次，我/new的时候再写交接然后直接换」
+// Operator's rule: notify at the first threshold, once more at 90%, never block.
 //
 // Read-only by design. It never blocks a turn, never writes a handoff, never
 // switches anything — it just makes sure the ceiling is never a surprise.
@@ -2443,6 +2443,7 @@ async function checkContextUsage() {
   }
   for (const threshold of hits) {
     await sendMessage(ownerChatId, formatContextAlert({
+      agentName: config.botName,
       percent,
       threshold,
       sessionId,

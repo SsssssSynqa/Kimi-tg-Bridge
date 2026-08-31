@@ -1,6 +1,7 @@
 // Session handoff for Skald.
 //
-// Synqa, 2026-08-15: 「我/new的时候再写交接然后直接换」
+// Operator's rule: the handoff note is written at /new time, immediately
+// before the swap — not kept as a separate step to remember.
 //
 // /new is one-way. The instant the new session starts, anything that lived only
 // in the old window is gone. So the order is fixed and not negotiable:

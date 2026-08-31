@@ -1,6 +1,7 @@
 // Transport-level retry for Telegram calls.
 //
-// Synqa, 2026-08-15 21:57: "Skald刚才回在终端了，没回在tg，是桥断了？"
+// Reported symptom: the agent answered in the terminal but nothing arrived on
+// Telegram — the reply was generated, only the delivery leg failed.
 // Kimi had already written the reply. One sendMessage timed out on the way to
 // Telegram, the turn was marked failed, and the durable layer's recovery was to
 // regenerate the whole turn — so she sat there with nothing while the text was

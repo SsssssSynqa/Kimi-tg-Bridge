@@ -3,7 +3,8 @@ import test from 'node:test';
 
 import { isRetryableTransportError, withTransportRetry } from '../src/telegram-transport-retry.mjs';
 
-// Synqa's report (2026-08-15, 21:57): "Skald刚才回在终端了，没回在tg，是桥断了？"
+// Reported symptom: the agent answered in the terminal but nothing arrived on
+// Telegram — generation succeeded, delivery did not.
 // Kimi had already written the reply — it was sitting in the TUI — but the
 // sendMessage that would have carried it to her timed out once, the whole turn
 // was marked failed, and the durable layer's idea of recovery was to REGENERATE

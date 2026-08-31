@@ -2,7 +2,8 @@
 //
 // 最要紧的两条：
 //   ① 剥壳必须认出真人的话 —— 不剥壳，精炼出来的全是 TG_PRIVATE 协议噪音，
-//      跟大猫猫那边 isMeta 的坑是同一类（那次差点让换窗后的他听不见她说话）
+//      与另一个 harness 上 isMeta 标记那个坑同源：过滤条件写宽一格，换窗后的
+//      agent 就再也看不到操作者说过的话。
 //   ② think 是思考链，绝不能带进下一窗
 
 import assert from 'node:assert/strict';
@@ -50,7 +51,7 @@ function tgPrivate(text) {
   return [
     'TG_PRIVATE',
     'Follow the Telegram bridge protocol from AGENTS.md. Reply with the Telegram message body only.',
-    JSON.stringify({ mode: 'TG_PRIVATE', botName: 'Skald', sender: '鹅鹅', username: 'Good_Goose_Max', text }),
+    JSON.stringify({ mode: 'TG_PRIVATE', botName: 'Skald', sender: 'Operator', username: 'operator', text }),
   ].join('\n');
 }
 
@@ -81,8 +82,8 @@ test('剥掉 TG_PRIVATE 协议壳，认出说话人和正文', async () => {
   try {
     const payload = await buildCarryover(makeWire(dir));
     assert.ok(payload.selected > 0);
-    assert.ok(payload.body.includes('鹅鹅：') || payload.body.includes('鹅鹅:'),
-      `摘录里应出现「鹅鹅」，实得开头：${payload.body.slice(0, 200)}`);
+    assert.ok(payload.body.includes('Operator：') || payload.body.includes('Operator:'),
+      `摘录里应出现「Operator」，实得开头：${payload.body.slice(0, 200)}`);
     assert.ok(!payload.body.includes('TG_PRIVATE'), '协议壳不能漏进摘录');
     assert.ok(!payload.body.includes('"mode"'), 'JSON 载荷不能漏进摘录');
   } finally {
@@ -120,11 +121,11 @@ test('TG_GROUP_BATCH 一批消息逐条摊平，各自带说话人', async () =>
   try {
     const extra = userLine(tgGroup([
       { messageId: 1, sender: 'Syner✨', text: '本王说了一句要记住的话，这是承诺' },
-      { messageId: 2, sender: '鹅鹅', text: '我也说了一句要记住的话，答应我' },
+      { messageId: 2, sender: 'Operator', text: '我也说了一句要记住的话，答应我' },
     ])) + assistantLines([{ type: 'text', text: '两句都记下了。' }]);
     const payload = await buildCarryover(makeWire(dir, extra));
     assert.ok(payload.body.includes('Syner✨'), '群里其他人的名字要留住');
-    assert.ok(payload.body.includes('鹅鹅'));
+    assert.ok(payload.body.includes('Operator'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -163,13 +164,13 @@ test('wire 不存在时报清楚的错，不是崩在 spawn 里', async () => {
 test('落盘带上出处头，正文原样保留', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skald-carryover-'));
   try {
-    const report = { source_events: 100, selected: 20, gold: 12, estimated_tokens: 1234, speakers: [['鹅鹅', 9]] };
-    const filePath = writeCarryoverFile({ root: dir, sessionId: SESSION, body: '鹅鹅：测试正文', report });
+    const report = { source_events: 100, selected: 20, gold: 12, estimated_tokens: 1234, speakers: [['Operator', 9]] };
+    const filePath = writeCarryoverFile({ root: dir, sessionId: SESSION, body: 'Operator：测试正文', report });
     const written = fs.readFileSync(filePath, 'utf8');
     assert.match(written, /# 精炼历史/);
     assert.match(written, /源对话 100 条里留下 20 条/);
-    assert.match(written, /鹅鹅×9/);
-    assert.ok(written.includes('鹅鹅：测试正文'));
+    assert.match(written, /Operator×9/);
+    assert.ok(written.includes('Operator：测试正文'));
     assert.equal(fs.statSync(filePath).mode & 0o777, 0o600, '交接内容是私密的');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -213,8 +214,8 @@ test('只有交接没有精炼时，引导语不留空编号', () => {
 test('汇报里过滤掉合成的占位说话人', () => {
   const text = carryoverMessage('/x/y.md', {
     source_events: 10, selected: 5, gold: 3, tail: 2, dropped_for_budget: 0, estimated_tokens: 100,
-    speakers: [['鹅鹅', 3], ['[refined-carryover', 1]],
+    speakers: [['Operator', 3], ['[refined-carryover', 1]],
   });
-  assert.match(text, /鹅鹅×3/);
+  assert.match(text, /Operator×3/);
   assert.ok(!text.includes('refined-carryover'));
 });

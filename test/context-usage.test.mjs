@@ -12,7 +12,8 @@ import {
   formatContextAlert,
 } from '../src/context-usage.mjs';
 
-// Synqa's call (2026-08-15): "通知，然后90%再通知一次，我/new的时候再写交接然后直接换"
+// Product rule: notify at the first threshold, notify once more at 90%,
+// never block the conversation.
 //
 // Nothing here may block a turn or switch a session. The watcher only reads and
 // reports; /new stays entirely in her hands. Two sources, because the TUI status
@@ -48,7 +49,7 @@ test('is not fooled by the word context appearing in a reply', () => {
 // status bar at the bottom of the pane counts as a measurement.
 test('prose far above the status bar is never read as a measurement', () => {
   const pane = [
-    '史官记下一句：context: 40% 只是个比喻。',
+    'The agent noted: context: 40% 只是个比喻。',
     ...Array.from({ length: 20 }, (_, i) => `filler line ${i}`),
     ' ╰────────────────────────╯',
     ' yolo  K3 thinking: high',
@@ -59,7 +60,7 @@ test('prose far above the status bar is never read as a measurement', () => {
 
 test('prose with no status bar at all still reads as no measurement', () => {
   const pane = [
-    '史官记下一句：context: 40% 只是个比喻。',
+    'The agent noted: context: 40% 只是个比喻。',
     ...Array.from({ length: 20 }, (_, i) => `filler line ${i}`),
   ].join('\n');
   assert.equal(parsePaneContextPercent(pane), null);
