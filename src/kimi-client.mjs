@@ -131,6 +131,11 @@ export class KimiCliClient {
     // Without it a TUI turn that needs approval hangs on a dialog only visible
     // in the terminal — she waits for a reply, he waits for a keypress.
     requestUserApproval = null,
+    // Kimi's cache-expiry dialog is also invisible from Telegram: the TUI waits
+    // on a keypress nobody can see, so the turn hangs. This deployment answers
+    // it by preserving the full context; the callback surfaces that choice
+    // without coupling the TUI driver to the Telegram transport.
+    onCacheHintContinue = null,
     log = () => {},
   } = {}) {
     this.kimiPath = kimiPath;
@@ -158,6 +163,7 @@ export class KimiCliClient {
     this.onThreadChange = onThreadChange;
     this.onSecurityEvent = onSecurityEvent;
     this.requestUserApproval = typeof requestUserApproval === 'function' ? requestUserApproval : null;
+    this.onCacheHintContinue = typeof onCacheHintContinue === 'function' ? onCacheHintContinue : null;
     this.log = log;
     this.closing = false;
     this.activeChild = null;
@@ -469,14 +475,68 @@ export class KimiCliClient {
   }
 
   // The composer row renders as `│ > typed text   │`; empty means idle input.
-  composerIsEmpty() {
-    const lines = this.capturePane().split('\n');
+  composerIsEmpty(pane = this.capturePane()) {
+    const lines = pane.split('\n');
     for (let i = lines.length - 1; i >= 0; i -= 1) {
       const match = lines[i].match(/│\s*>\s?(.*)│\s*$/);
       if (match) return match[1].trim() === '';
     }
     // No composer found (alt screen redraw edge) — do not block the turn.
     return true;
+  }
+
+  // Kimi 0.38 replaces the editor with this dialog after a long-idle, 200k+
+  // session receives its next submit. Looking only for an empty composer is
+  // unsafe: the replacement has no composer, which used to make the bridge
+  // re-paste and press Enter on the default `Compact and continue` option.
+  cacheExpiryHintIsOpen(pane = this.capturePane()) {
+    const normalized = String(pane || '').replace(/\s+/g, ' ');
+    const anchors = [
+      'This session has been idle for ',
+      'Compact and continue',
+      'Start a new session',
+      'Continue as-is',
+      "Don't ask me again",
+    ];
+    let cursor = -1;
+    return anchors.every((anchor) => {
+      cursor = normalized.indexOf(anchor, cursor + 1);
+      return cursor >= 0;
+    });
+  }
+
+  notifyCacheHintContinue(scene) {
+    if (!this.onCacheHintContinue) return;
+    try {
+      Promise.resolve(this.onCacheHintContinue({
+        scene,
+        threadId: this.threadId,
+      })).catch((error) => this.log(`cache-expiry notice failed: ${error.message}`));
+    } catch (error) {
+      this.log(`cache-expiry notice failed: ${error.message}`);
+    }
+  }
+
+  // `Continue as-is` is the third item and Kimi initialises every fresh cache
+  // hint at item zero. Select it explicitly, then wait until the dialog has
+  // actually disappeared before allowing any paste or retry key through.
+  async continueCacheExpiryHintIfPresent(scene) {
+    if (!this.cacheExpiryHintIsOpen()) return false;
+    this.log(`Kimi cache-expiry hint detected (${scene}); selecting Continue as-is`);
+    this.tmux(['send-keys', '-t', this.tmuxSession, 'Down']);
+    this.tmux(['send-keys', '-t', this.tmuxSession, 'Down']);
+    await sleep(100);
+    this.tmux(['send-keys', '-t', this.tmuxSession, 'Enter']);
+
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      await sleep(100);
+      if (!this.cacheExpiryHintIsOpen()) {
+        this.notifyCacheHintContinue(scene);
+        return true;
+      }
+    }
+    throw new Error('Kimi cache-expiry hint stayed open after selecting Continue as-is');
   }
 
   // Translate a kimi approval request into the shape the bridge's Telegram
@@ -529,8 +589,8 @@ export class KimiCliClient {
   // composer visually empty. Re-injecting on that signal appends one more
   // queued item per retry — that is how a downstream fault buried Skald's pane
   // under 900 identical lines. The queue advertises itself with a steer hint.
-  tuiHasQueuedInput() {
-    return /ctrl-s to steer/i.test(this.capturePane());
+  tuiHasQueuedInput(pane = this.capturePane()) {
+    return /ctrl-s to steer/i.test(pane);
   }
 
   async ensureTui(sessionId) {
@@ -563,6 +623,7 @@ export class KimiCliClient {
         this.failClosed(sessionId, error);
         throw error;
       }
+      if (await this.continueCacheExpiryHintIfPresent('resume')) continue;
       if (/│\s*>/.test(this.capturePane())) {
         // The composer border renders before the TUI actually accepts input;
         // pasting immediately gets silently dropped. Give it a beat.
@@ -627,13 +688,17 @@ export class KimiCliClient {
     // any queued sends to drain — injecting into a busy TUI only lengthens its
     // queue, it does not start a turn.
     const composerDeadline = Date.now() + 20000;
-    while ((!this.composerIsEmpty() || this.tuiHasQueuedInput()) && Date.now() < composerDeadline) {
+    while (Date.now() < composerDeadline) {
+      if (await this.continueCacheExpiryHintIfPresent('pre-submit')) continue;
+      const pane = this.capturePane();
+      if (this.composerIsEmpty(pane) && !this.tuiHasQueuedInput(pane)) break;
       await sleep(500);
     }
-    if (this.tuiHasQueuedInput()) {
+    const preSubmitPane = this.capturePane();
+    if (this.tuiHasQueuedInput(preSubmitPane)) {
       throw new Error('Kimi TUI still has queued input after 20s; refusing to inject into a busy TUI');
     }
-    if (!this.composerIsEmpty()) this.log('TUI composer still has text after 20s; injecting anyway');
+    if (!this.composerIsEmpty(preSubmitPane)) this.log('TUI composer still has text after 20s; injecting anyway');
 
     const state = {
       carry: '',
@@ -657,6 +722,7 @@ export class KimiCliClient {
     let deadline = Date.now() + this.timeoutMs;
     let lastRetry = Date.now();
     let retries = 0;
+    let cacheHintHandledAt = null;
     while (Date.now() < deadline) {
       await sleep(500);
       let stat;
@@ -673,6 +739,25 @@ export class KimiCliClient {
         }
       }
       if (state.done) return state.text.trim();
+      // The submit may have been swallowed into Kimi's cache-expiry dialog.
+      // Resolve the approved choice before the generic self-heal can mistake
+      // the editor replacement for a dropped paste and hit the default item.
+      if (!state.matched && await this.continueCacheExpiryHintIfPresent('submit')) {
+        cacheHintHandledAt = Date.now();
+        lastRetry = cacheHintHandledAt;
+        continue;
+      }
+      // Kimi owns the original stashed prompt after `Continue as-is`; never
+      // inject a duplicate while it is releasing that prompt back to the turn.
+      if (!state.matched && cacheHintHandledAt !== null) {
+        if (Date.now() - cacheHintHandledAt > 30000) {
+          throw new Error(
+            'Kimi continued past the cache-expiry hint but the stashed prompt did not register within 30s; '
+            + 'stopped without re-pasting',
+          );
+        }
+        continue;
+      }
       // Blocked on an approval dialog: ask Synqa, type her answer back, and do
       // not count the time she took against this turn's timeout — nor mistake
       // the pause for a dropped keystroke.

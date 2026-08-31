@@ -45,6 +45,7 @@ import {
 } from './telegram-image-utils.mjs';
 import { PendingGroupImages } from './pending-group-images.mjs';
 import { createPollStallWatchdog, DEFAULT_STALL_MS } from './poll-stall-watchdog.mjs';
+import { createAlbumBatcher, DEFAULT_ALBUM_WINDOW_MS } from './telegram-album-batcher.mjs';
 import { withTransportRetry } from './telegram-transport-retry.mjs';
 import { telegramToolMode } from './tool-mode-policy.mjs';
 import { buildHandoffPrompt, writeHandoff } from './handoff.mjs';
@@ -1854,7 +1855,7 @@ async function processPrivateMessage(message, text, context, images = [], files 
 // Routing
 // ---------------------------------------------------------------------------
 
-async function handleMessage(message, durableUpdateId = null) {
+async function handleMessage(message, durableUpdateId = null, albumMessages = []) {
   const rawText = getTelegramMessageText(message);
   const messageHasAttachments = hasTelegramAttachments(message);
   if (!message || (!rawText && !messageHasAttachments)) return {};
@@ -2016,7 +2017,7 @@ async function handleMessage(message, durableUpdateId = null) {
     ? new RegExp(`@${botUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi')
     : null;
   const captionOrText = (mentionPattern ? rawText.replace(mentionPattern, '') : rawText).trim();
-  const { images, files, notes: attachmentNotes } = await downloadTelegramAttachments(message, {
+  const attachmentOptions = {
     token,
     imageCacheDir,
     fileCacheDir,
@@ -2024,7 +2025,21 @@ async function handleMessage(message, durableUpdateId = null) {
     maxImageBytes: Number(config.imageMaxBytes || DEFAULT_CONFIG.imageMaxBytes),
     maxFileBytes: Number(config.fileMaxBytes || DEFAULT_CONFIG.fileMaxBytes),
     maxPreviewChars: Number(config.attachmentTextMaxChars || DEFAULT_CONFIG.attachmentTextMaxChars),
-  });
+  };
+  const { images, files, notes: attachmentNotes } = await downloadTelegramAttachments(message, attachmentOptions);
+  // 相册的其余几条只带图（caption 通常只在第一条上），并进同一轮：
+  // 一次发三张图 = 一个 turn、一次回答。
+  for (const extra of albumMessages) {
+    try {
+      const more = await downloadTelegramAttachments(extra, attachmentOptions);
+      images.push(...more.images);
+      files.push(...more.files);
+      if (Array.isArray(more.notes) && Array.isArray(attachmentNotes)) attachmentNotes.push(...more.notes);
+    } catch (error) {
+      // 相册里掉一张图，不让整轮回复陪葬。
+      log(`album attachment download failed message=${extra?.message_id}: ${error.message}`);
+    }
+  }
   const text = buildMessageTextWithAttachments(captionOrText, images, files, attachmentNotes);
   if (!text && !images.length && !files.length) {
     if (isGroup && shouldRememberCurrentGroupMessage) {
@@ -2118,11 +2133,11 @@ async function checkConnection() {
 // Durable dispatch
 // ---------------------------------------------------------------------------
 
-async function prepareTelegramUpdate(update) {
+async function prepareTelegramUpdate(update, albumMessages = []) {
   if (update.callback_query) {
     return { completion: handleCallbackQuery(update.callback_query) };
   }
-  if (update.message) return (await handleMessage(update.message, Number(update.update_id))) || {};
+  if (update.message) return (await handleMessage(update.message, Number(update.update_id), albumMessages)) || {};
   return {};
 }
 
@@ -2274,13 +2289,52 @@ async function replayPendingDurableGroupBatches() {
   }
 }
 
+// 2026-08-30：Telegram 的相册不是一条消息，是 N 条共享 media_group_id 的 update。
+// 不聚合就一张图回一条。albumWindowMs=0 可退回逐条行为。
+const albumWindowMs = config.albumWindowMs === undefined
+  ? DEFAULT_ALBUM_WINDOW_MS
+  : Math.max(0, Number(config.albumWindowMs) || 0);
+const albumBatcher = albumWindowMs > 0 ? createAlbumBatcher({ windowMs: albumWindowMs }) : null;
+let albumFlushTimer = null;
+// 窗口到点得有人来收：轮询可能正卡在 30s 长轮询上，等它回来太晚。
+function scheduleAlbumFlush(waitMs) {
+  if (albumFlushTimer) return;
+  albumFlushTimer = setTimeout(() => {
+    albumFlushTimer = null;
+    dispatchDurableUpdates().catch((error) => log(`album flush dispatch failed: ${error.message}`));
+  }, Math.max(50, Number(waitMs) || 50));
+  albumFlushTimer.unref?.();
+}
+
 async function runDurableDispatch() {
   await replayPendingDurableGroupBatches();
   const maxInFlight = Math.max(1, Number(config.updateMaxInFlight || DEFAULT_CONFIG.updateMaxInFlight));
-  for (const update of durableInbox.pendingUpdates()) {
+  const pendingSnapshot = [...durableInbox.pendingUpdates()];
+  for (const update of pendingSnapshot) {
     const updateId = Number(update.update_id);
     if (inFlightUpdates.has(updateId)) continue;
     if (inFlightUpdates.size >= maxInFlight) break;
+
+    // 相册聚合：每条 update 仍独立落盘，合并只发生在这里；窗口没到就跳过本轮，
+    // 挂定时器到点再来，不 sleep 在收消息那条路上。
+    let albumMessages = [];
+    let albumSiblingIds = [];
+    let albumId = null;
+    if (albumBatcher) {
+      const plan = albumBatcher.plan(update, pendingSnapshot);
+      if (plan.action === 'wait') { scheduleAlbumFlush(plan.waitMs); continue; }
+      if (plan.action === 'merge') {
+        const [main, ...rest] = plan.updates;
+        // 整批只由最小 update_id 负责，其余随它一起 markDone。
+        if (Number(main.update_id) !== updateId) continue;
+        albumMessages = rest.map((sibling) => sibling.message).filter(Boolean);
+        albumSiblingIds = rest.map((sibling) => Number(sibling.update_id));
+        albumId = plan.albumId;
+        if (albumMessages.length) {
+          log(`album merged chat=${update.message?.chat?.id} items=${albumMessages.length + 1}`);
+        }
+      }
+    }
 
     let prepared;
     try {
@@ -2288,7 +2342,7 @@ async function runDurableDispatch() {
       // download and enqueue happen in update_id order. The long-running
       // model/send work is represented by `completion`, so later updates can
       // still join the same group batch.
-      prepared = await prepareTelegramUpdate(update);
+      prepared = await prepareTelegramUpdate(update, albumMessages);
     } catch (error) {
       recordUpdateFailure(update, error, 'prepare');
       break;
@@ -2298,6 +2352,8 @@ async function runDurableDispatch() {
     const tracked = completion
       .then(() => {
         durableInbox.markDone(updateId);
+        for (const siblingId of albumSiblingIds) durableInbox.markDone(siblingId);
+        if (albumId) albumBatcher?.forget(albumId);
       })
       .catch((error) => {
         recordUpdateFailure(update, error, 'completion');

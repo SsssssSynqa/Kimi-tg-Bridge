@@ -32,17 +32,28 @@ const PANE_QUEUED = [
   ' ╰──────────────────────────────────────────╯',
 ].join('\n');
 
-function makeClient({ pane, timeoutMs = 12000 }) {
+const PANE_CACHE_HINT = [
+  ' This session has been idle for 1h 4m and is ~201k tokens.',
+  ' Compact and continue',
+  ' Start a new session',
+  ' Continue as-is',
+  " Don't ask me again",
+  ' ↑↓ navigate · Enter select · Esc cancel',
+].join('\n');
+
+function makeClient({ pane, timeoutMs = 12000, onCacheHintContinue = null, onTmux = null }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skald-wire-'));
   const wire = path.join(dir, 'wire.jsonl');
   fs.writeFileSync(wire, '');
 
   const client = new KimiCliClient({
     workdir: dir,
-    threadId: 'session_test',
+    threadId: null,
     engine: 'tui',
     timeoutMs,
+    onCacheHintContinue,
   });
+  client.threadId = 'session_test';
 
   const injections = [];
   const keys = [];
@@ -53,6 +64,7 @@ function makeClient({ pane, timeoutMs = 12000 }) {
   client.tmux = (args, input) => {
     if (args[0] === 'load-buffer') injections.push(String(input));
     if (args[0] === 'send-keys') keys.push(args.at(-1));
+    if (onTmux) onTmux({ args, input, wire, injections, keys });
     return '';
   };
 
@@ -96,6 +108,90 @@ test('queue detection reads the steer hint, not the composer', () => {
   const { client: idle } = makeClient({ pane: PANE_IDLE });
   assert.equal(idle.tuiHasQueuedInput(), false);
   assert.equal(idle.composerIsEmpty(), true);
+});
+
+test('cache-expiry detection requires the real dialog anchors', () => {
+  const { client } = makeClient({ pane: PANE_CACHE_HINT });
+  assert.equal(client.cacheExpiryHintIsOpen(), true);
+
+  const { client: idle } = makeClient({ pane: PANE_IDLE });
+  assert.equal(idle.cacheExpiryHintIsOpen(), false);
+
+  const { client: changedMenu } = makeClient({
+    pane: PANE_CACHE_HINT.replace(' Start a new session\n', ''),
+  });
+  assert.equal(changedMenu.cacheExpiryHintIsOpen(), false, 'do not press Down twice if the menu shape changed');
+});
+
+test('a submit-time cache hint chooses Continue as-is without re-pasting', async () => {
+  const prompt = 'TG_PRIVATE cache hint after submit';
+  let pane = PANE_IDLE;
+  let firstSubmit = true;
+  let downCount = 0;
+  const notices = [];
+  const { client, wire, injections, keys } = makeClient({
+    pane: () => pane,
+    timeoutMs: 15000,
+    onCacheHintContinue: (event) => { notices.push(event); },
+    onTmux: ({ args }) => {
+      if (args[0] !== 'send-keys') return;
+      const key = args.at(-1);
+      if (key === 'Down') {
+        downCount += 1;
+        return;
+      }
+      if (key === 'Enter' && firstSubmit) {
+        firstSubmit = false;
+        pane = PANE_CACHE_HINT;
+        return;
+      }
+      if (key === 'Enter' && downCount === 2) {
+        pane = PANE_IDLE;
+        setTimeout(() => writeTurn(wire, prompt, '完整上下文继续'), 50);
+      }
+    },
+  });
+
+  const reply = await client.runTuiTurn(prompt, 'session_test');
+  assert.equal(reply, '完整上下文继续');
+  assert.equal(injections.length, 1, 'the stashed prompt belongs to Kimi and must not be pasted twice');
+  assert.deepEqual(keys.slice(0, 4), ['Enter', 'Down', 'Down', 'Enter']);
+  assert.deepEqual(notices, [{ scene: 'submit', threadId: 'session_test' }]);
+});
+
+test('a pre-existing cache hint is continued before the prompt is injected', async () => {
+  const prompt = 'TG_PRIVATE cache hint before submit';
+  let pane = PANE_CACHE_HINT;
+  let downCount = 0;
+  let dialogHandled = false;
+  const notices = [];
+  const { client, wire, injections, keys } = makeClient({
+    pane: () => pane,
+    timeoutMs: 15000,
+    onCacheHintContinue: (event) => { notices.push(event); },
+    onTmux: ({ args }) => {
+      if (args[0] !== 'send-keys') return;
+      const key = args.at(-1);
+      if (key === 'Down') {
+        downCount += 1;
+        return;
+      }
+      if (key === 'Enter' && !dialogHandled && downCount === 2) {
+        dialogHandled = true;
+        pane = PANE_IDLE;
+        return;
+      }
+      if (key === 'Enter' && dialogHandled) {
+        setTimeout(() => writeTurn(wire, prompt, '先关弹窗再提交'), 50);
+      }
+    },
+  });
+
+  const reply = await client.runTuiTurn(prompt, 'session_test');
+  assert.equal(reply, '先关弹窗再提交');
+  assert.equal(injections.length, 1, 'the prompt is injected only after the dialog is gone');
+  assert.deepEqual(keys.slice(0, 4), ['Down', 'Down', 'Enter', 'Enter']);
+  assert.deepEqual(notices, [{ scene: 'pre-submit', threadId: 'session_test' }]);
 });
 
 test('a turn that never registers is truncated by the retry cap', async () => {
