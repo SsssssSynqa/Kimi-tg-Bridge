@@ -27,10 +27,33 @@ import { KimiCliClient } from './kimi-client.mjs';
 import { syncDesktopMetadata } from './desktop-sync.mjs';
 import { deliverDurablePrivateReply, DurableUpdateInbox } from './durable-update-inbox.mjs';
 import { handleGateCommand, normalizeGatePrefix, readDynamicGroups } from './gate-command.mjs';
+import { buildTelegramReplyContext } from './telegram-reply-context.mjs';
+import { splitTelegramText } from './telegram-text-split.mjs';
 import { createRequire as __flowRequire } from 'node:module';
 // 全家共用的续场开关（/flow N）。四座桥各自独立进程、模块系统还不一样，
 // 所以状态放在一个大家都读的文件里，Synqa 发一条命令四座都认。
 const groupFlow = __flowRequire(import.meta.url)('../../../shared/group-flow.cjs');
+
+// Synqa 的表情＝放行信号（2026-08-31）。
+//
+// 她的原话：群里几个 bot 在一起时连发上限一到就停，"强制插话我也很尴尬啊！
+// 我就只能『Syner加油』"。计数器只认人类**消息**，于是她被迫当人肉复位键。
+// 现在她点个表情就把该群计数器清零 —— 等于说了句"继续"，但不必真的开口。
+//
+// 只认 owner 的表情：否则任何群成员都能解开刷屏保护。
+function handleOwnerReaction(update) {
+  const r = update?.message_reaction;
+  if (!r || !r.chat) return;
+  const chatId = String(r.chat.id);
+  if (!allowedUserIds.has(String(r.user?.id || ''))) return;
+  // 只在真的加了表情时放行；取消表情不算。
+  if (!Array.isArray(r.new_reaction) || !r.new_reaction.length) return;
+  const had = groupBotRuns.get(chatId) || 0;
+  if (!had) return;
+  groupBotRuns.set(chatId, 0);
+  const emoji = r.new_reaction.map((x) => x?.emoji || x?.type).filter(Boolean).join('');
+  log(`[reaction] owner 表情放行 chat=${chatId} emoji=${emoji} 连发计数 ${had} → 0`);
+}
 
 // /flow N ｜ /flow off ｜ /flow —— 全家共用的续场开关。四座桥都执行写入（幂等），
 // 但**只有一座回话**：谁先抢到这条命令的回执锁谁说，其余静默。否则 Synqa 发一条
@@ -733,21 +756,6 @@ async function telegram(method, params = {}, { onAttempt = null } = {}) {
   });
 }
 
-function splitTelegramText(text, limit = 4000) {
-  const chunks = [];
-  let rest = String(text || '');
-
-  while (rest.length > limit) {
-    let cut = rest.lastIndexOf('\n', limit);
-    if (cut < Math.floor(limit * 0.6)) cut = limit;
-    chunks.push(rest.slice(0, cut));
-    rest = rest.slice(cut).replace(/^\n/, '');
-  }
-
-  if (rest) chunks.push(rest);
-  return chunks.length ? chunks : [`(${config.botName} produced no sendable text.)`];
-}
-
 function truncateLiveText(value, maxChars = Number(config.liveLogMaxChars || 6000)) {
   const text = String(value || '');
   if (text.length <= maxChars) return text;
@@ -802,7 +810,7 @@ async function sendMessage(chatId, text, replyToMessageId = null, options = {}) 
     return !result?.skipped;
   }
 
-  const chunks = splitTelegramText(text);
+  const chunks = splitTelegramText(text, 4000, `(${config.botName} produced no sendable text.)`);
   for (const [index, chunk] of chunks.entries()) {
     const params = { chat_id: chatId, text: chunk };
     if (index === 0 && replyToMessageId) {
@@ -915,6 +923,7 @@ function buildPrivatePrompt(text, context, images = [], files = []) {
       writableRoots: privateToolsEnabled ? toolWritableRoots : [],
       networkAccess: privateToolsEnabled && config.toolNetworkAccess === true,
     },
+    replyTo: context.replyTo || null,
     text,
   };
   return [
@@ -942,6 +951,7 @@ function buildGroupBatchPrompt(batch, {
     username: message.senderUsername || null,
     senderIsBot: message.senderIsBot,
     contextOnly: message.contextOnly === true,
+    replyTo: message.replyTo || null,
     text: message.text,
     images: (message.images || []).map((image) => ({
       mimeType: image.mimeType,
@@ -1015,6 +1025,7 @@ function serializeDurableGroupMessage(message) {
     chatTitle: String(message.chatTitle || ''),
     messageId: Number(message.messageId),
     text: String(message.text || ''),
+    replyTo: structuredClone(message.replyTo || null),
     images: structuredClone(message.images || []),
     files: structuredClone(message.files || []),
     senderId: String(message.senderId || ''),
@@ -2105,6 +2116,7 @@ async function handleMessage(message, durableUpdateId = null, albumMessages = []
     senderUsername,
     senderName,
     groupProfile: groupConfig?.profile || '',
+    replyTo: buildTelegramReplyContext(message, botUsername),
   };
 
   appendLiveLog({
@@ -2149,6 +2161,7 @@ async function handleMessage(message, durableUpdateId = null, albumMessages = []
     chatId,
     chatTitle: context.chatTitle,
     messageId: message.message_id,
+    replyTo: context.replyTo,
     text,
     images,
     files,
@@ -2361,6 +2374,7 @@ async function runDurableDispatch() {
     let albumMessages = [];
     let albumSiblingIds = [];
     let albumId = null;
+    let albumBatchKey = null;
     if (albumBatcher) {
       const plan = albumBatcher.plan(update, pendingSnapshot);
       if (plan.action === 'wait') { scheduleAlbumFlush(plan.waitMs); continue; }
@@ -2371,6 +2385,7 @@ async function runDurableDispatch() {
         albumMessages = rest.map((sibling) => sibling.message).filter(Boolean);
         albumSiblingIds = rest.map((sibling) => Number(sibling.update_id));
         albumId = plan.albumId;
+        albumBatchKey = plan.batchKey;
         if (albumMessages.length) {
           log(`album merged chat=${update.message?.chat?.id} items=${albumMessages.length + 1}`);
         }
@@ -2394,7 +2409,7 @@ async function runDurableDispatch() {
       .then(() => {
         durableInbox.markDone(updateId);
         for (const siblingId of albumSiblingIds) durableInbox.markDone(siblingId);
-        if (albumId) albumBatcher?.forget(albumId);
+        if (albumBatchKey) albumBatcher?.forget(albumBatchKey);
       })
       .catch((error) => {
         recordUpdateFailure(update, error, 'completion');
@@ -2600,11 +2615,23 @@ async function poll() {
       const updates = await telegram('getUpdates', {
         offset: updateOffset,
         timeout: 30,
-        allowed_updates: ['message', 'callback_query'],
+        // message_reaction 必须显式列出，Telegram 默认不投递。
+        // 用途见 handleOwnerReaction：owner 点表情＝放行，不必开口插话。
+        allowed_updates: ['message', 'callback_query', 'message_reaction'],
       }, { onAttempt: () => pollWatchdog.beginPoll() });
       pollWatchdog.endPoll();
 
       for (const update of updates) {
+        // 表情不进 durable inbox：它是低频、尽力而为的信号，重放一个旧表情
+        // 没有意义。处理完只推进 offset。
+        if (update.message_reaction) {
+          try { handleOwnerReaction(update); } catch (error) {
+            log(`处理表情失败 update=${update.update_id}: ${error.message}`);
+          }
+          updateOffset = Math.max(updateOffset, Number(update.update_id) + 1);
+          writePrivateFile(offsetPath, String(updateOffset));
+          continue;
+        }
         // Durable acceptance has to happen before the Telegram offset moves:
         // otherwise a crash here loses the update for good.
         durableInbox.recordReceived(update);

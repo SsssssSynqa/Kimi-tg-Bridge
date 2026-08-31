@@ -23,6 +23,16 @@ function albumIdOf(update) {
   return id === undefined || id === null || id === '' ? null : String(id);
 }
 
+function albumKeyOf(update, albumId) {
+  const message = update?.message;
+  if (!message) return null;
+  return JSON.stringify([
+    String(message.chat?.id ?? ''),
+    String(message.message_thread_id ?? ''),
+    String(albumId),
+  ]);
+}
+
 /** 同一相册必须同群、同话题；跨聊天的相同 id 不该被并到一起。 */
 function sameConversation(a, b) {
   const ma = a?.message; const mb = b?.message;
@@ -35,8 +45,8 @@ export function createAlbumBatcher({
   windowMs = DEFAULT_ALBUM_WINDOW_MS,
   now = () => Date.now(),
 } = {}) {
-  // media_group_id -> 本进程第一次看到这个相册的时刻
-  const firstSeen = new Map();
+  // (chat, thread, media_group_id) -> 最后一次发现新成员的时刻与成员集合。
+  const albumStates = new Map();
 
   return {
     /**
@@ -51,28 +61,37 @@ export function createAlbumBatcher({
       if (!albumId) return { action: 'single' };
 
       const at = now();
-      if (!firstSeen.has(albumId)) firstSeen.set(albumId, at);
-      const elapsed = at - firstSeen.get(albumId);
-      if (elapsed < windowMs) {
-        return { action: 'wait', waitMs: windowMs - elapsed, albumId };
-      }
-
+      const batchKey = albumKeyOf(update, albumId);
       const group = pendingUpdates
         .filter((candidate) => albumIdOf(candidate) === albumId && sameConversation(candidate, update))
         .sort((a, b) => Number(a.update_id) - Number(b.update_id));
-      // 兜底：调用方传来的 pending 列表若不含自己，也不能把本条弄丢。
       const updates = group.length ? group : [update];
-      return { action: 'merge', updates, albumId };
+      const memberIds = new Set(updates.map((candidate) => String(candidate.update_id)));
+      let state = albumStates.get(batchKey);
+      if (!state) {
+        state = { lastSeen: at, memberIds };
+        albumStates.set(batchKey, state);
+      } else {
+        const hasNewMember = [...memberIds].some((id) => !state.memberIds.has(id));
+        if (hasNewMember) state.lastSeen = at;
+        for (const id of memberIds) state.memberIds.add(id);
+      }
+      const elapsed = at - state.lastSeen;
+      if (elapsed < windowMs) {
+        return { action: 'wait', waitMs: windowMs - elapsed, albumId, batchKey };
+      }
+
+      return { action: 'merge', updates, albumId, batchKey };
     },
 
-    /** 一个相册处理完就忘掉它，避免 firstSeen 无限增长。 */
-    forget(albumId) {
-      if (albumId) firstSeen.delete(albumId);
+    /** 一个相册处理完就忘掉它，避免内存状态无限增长。 */
+    forget(batchKey) {
+      if (batchKey) albumStates.delete(batchKey);
     },
 
     /** 仅供测试与排障。 */
     size() {
-      return firstSeen.size;
+      return albumStates.size;
     },
   };
 }

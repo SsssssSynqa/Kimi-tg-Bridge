@@ -46,12 +46,25 @@ test('items arriving inside the window keep waiting', () => {
   assert.equal(batcher.plan(a, [a, upd(2, { album: 'A' })]).action, 'wait');
 });
 
+test('a new member restarts the full quiet window', () => {
+  const { batcher, advance } = harness();
+  const a = upd(1, { album: 'A' });
+  const b = upd(2, { album: 'A' });
+  batcher.plan(a, [a]);
+  advance(DEFAULT_ALBUM_WINDOW_MS - 100);
+  assert.equal(batcher.plan(a, [a, b]).action, 'wait');
+  advance(150);
+  assert.equal(batcher.plan(a, [a, b]).action, 'wait');
+  advance(DEFAULT_ALBUM_WINDOW_MS);
+  assert.equal(batcher.plan(a, [a, b]).action, 'merge');
+});
+
 test('after the window the album merges in update_id order', () => {
   const { batcher, advance } = harness();
   const a = upd(7, { album: 'A' });
   const b = upd(5, { album: 'A' });
   const c = upd(6, { album: 'A' });
-  batcher.plan(a, [a]);
+  batcher.plan(a, [a, b, c]);
   advance(DEFAULT_ALBUM_WINDOW_MS + 1);
   const r = batcher.plan(a, [a, b, c]);
   assert.equal(r.action, 'merge');
@@ -65,6 +78,18 @@ test('the same media_group_id in another chat is never merged in', () => {
   batcher.plan(mine, [mine]);
   advance(DEFAULT_ALBUM_WINDOW_MS + 1);
   assert.deepEqual(batcher.plan(mine, [mine, other]).updates.map((u) => u.update_id), [1]);
+});
+
+test('the same media_group_id in another chat has an independent timer', () => {
+  const { batcher, advance } = harness();
+  const one = upd(1, { album: 'A', chat: 111 });
+  const two = upd(2, { album: 'A', chat: 222 });
+  const first = batcher.plan(one, [one]);
+  advance(DEFAULT_ALBUM_WINDOW_MS + 1);
+  assert.equal(batcher.plan(two, [two]).action, 'wait');
+  assert.equal(batcher.plan(one, [one]).action, 'merge');
+  batcher.forget(first.batchKey);
+  assert.equal(batcher.size(), 1);
 });
 
 test('a different forum topic is never merged in', () => {
@@ -89,8 +114,8 @@ test('the update is not lost when the pending list omits it', () => {
 test('forget releases the tracked album', () => {
   const { batcher } = harness();
   const a = upd(1, { album: 'A' });
-  batcher.plan(a, [a]);
+  const plan = batcher.plan(a, [a]);
   assert.equal(batcher.size(), 1);
-  batcher.forget('A');
+  batcher.forget(plan.batchKey);
   assert.equal(batcher.size(), 0);
 });
