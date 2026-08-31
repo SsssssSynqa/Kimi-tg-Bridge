@@ -27,6 +27,38 @@ import { KimiCliClient } from './kimi-client.mjs';
 import { syncDesktopMetadata } from './desktop-sync.mjs';
 import { deliverDurablePrivateReply, DurableUpdateInbox } from './durable-update-inbox.mjs';
 import { handleGateCommand, normalizeGatePrefix, readDynamicGroups } from './gate-command.mjs';
+import { createRequire as __flowRequire } from 'node:module';
+// 全家共用的续场开关（/flow N）。四座桥各自独立进程、模块系统还不一样，
+// 所以状态放在一个大家都读的文件里，Synqa 发一条命令四座都认。
+const groupFlow = __flowRequire(import.meta.url)('../../../shared/group-flow.cjs');
+
+// /flow N ｜ /flow off ｜ /flow —— 全家共用的续场开关。四座桥都执行写入（幂等），
+// 但**只有一座回话**：谁先抢到这条命令的回执锁谁说，其余静默。否则 Synqa 发一条
+// 命令收四条确认，比原来更吵 —— 她要的正是"发一次就行，不用挨个点名"。
+async function handleFlowCommand({ rawText, chatId, fromId, messageId, send, isOwner }) {
+  const command = groupFlow.parseFlowCommand(rawText);
+  if (!command) return false;
+  if (!isOwner) return true;
+  const result = groupFlow.applyFlowCommand(chatId, command);
+  let speak = false;
+  try {
+    const lockDir = path.join(os.tmpdir(), 'synergia-flow-ack');
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(path.join(lockDir, `${chatId}-${messageId}`), 'ack', { flag: 'wx' });
+    speak = true;
+  } catch (_) { speak = false; }
+  if (!speak) return true;
+  if (result.action === 'set') {
+    const until = new Date(result.expiresAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    await send(`续场模式：连发上限临时抬到 ${result.limit}（${until} 自动恢复，或 /flow off 手动关）。全家都收到了。`);
+  } else if (result.action === 'clear') {
+    await send(result.had ? '续场模式已关，连发上限回到默认。' : '本来就没开着。');
+  } else {
+    await send(result.limit ? `续场模式开着，上限 ${result.limit}。` : '续场模式没开，走默认上限。');
+  }
+  return true;
+}
+
 import {
   GroupConversationBatcher,
   PriorityTaskQueue,
@@ -1907,6 +1939,11 @@ async function handleMessage(message, durableUpdateId = null, albumMessages = []
     const staticGroupConfig = allowedGroups.get(chatId) || null;
     // Gate commands run before the authorization check: /<prefix>_on is how a
     // group gets authorized in the first place.
+    if (!senderIsBot && await handleFlowCommand({
+      rawText, chatId, fromId, messageId: message.message_id,
+      send: (text) => sendMessage(chatId, text),
+      isOwner: String(fromId) === String(config.ownerUserId || '') || allowedUserIds.has(String(fromId)),
+    })) return;
     if (!senderIsBot && await handleGateCommand({
       message,
       rawText,
@@ -2002,7 +2039,11 @@ async function handleMessage(message, durableUpdateId = null, albumMessages = []
       const previousRun = groupBotRuns.get(chatId) || 0;
       const nextRun = previousRun + 1;
       groupBotRuns.set(chatId, nextRun);
-      if (nextRun > Number(groupConfig.maxConsecutiveBotMessages || 8)) {
+      // 续场模式优先：Synqa 临时抬高的上限盖过本群配置。她要这个是因为几个 bot
+      // 聊起来时上限一到就停，得她开口才续 —— 而她本没在参与。
+      const flowLimit = groupFlow.flowLimitFor(chatId);
+      const runLimit = flowLimit || Number(groupConfig.maxConsecutiveBotMessages || 8);
+      if (nextRun > runLimit) {
         rememberPassiveGroupMessage();
         await capturePassiveGroupImages();
         log(`pause consecutive bot conversation chat=${chatId} from=${fromId} count=${nextRun}`);
