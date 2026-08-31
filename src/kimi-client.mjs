@@ -680,7 +680,9 @@ export class KimiCliClient {
         const promptText = (record.input || [])
           .map((part) => (part?.type === 'text' ? part.text : ''))
           .join('');
-        if (promptText.startsWith(state.needle)) state.matched = true;
+        // 认标记本身，不要求它在开头：标记全局唯一，出现即是这一轮，
+        // 而 startsWith 会被 TUI 对首行空白的任何规范化打破。
+        if (promptText.includes(state.needle)) state.matched = true;
         continue;
       }
       // Only a matching turn.prompt establishes causal ownership. Text from an
@@ -711,7 +713,17 @@ export class KimiCliClient {
     }
   }
 
-  async runTuiTurn(prompt, sessionId) {
+  async runTuiTurn(promptBody, sessionId) {
+    // 每轮一个唯一标记，贴在 prompt 首行。
+    //
+    // 旧实现用 prompt 前 80 字当指纹认自己那一轮，而私聊 prompt 前 80 字是
+    // "TG_PRIVATE\nFollow the Telegram bridge protocol from AGENTS.md. Reply with the Te"
+    // —— 纯协议头，任意两条消息完全相同。桥重启后 TUI 并不重开（ensureTui 首行
+    // 就是 tuiAlive() 则 return），于是新桥面对一个还留着上一轮残留的 TUI，
+    // 只能靠这个认不出彼此的指纹去猜，猜错就重投、或把上一轮的回复认成这一轮的。
+    // 2026-08-31 那天桥重启 11 次，失败 68 次；而 08-26 到 08-30 没重启，零失败。
+    const turnId = `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const prompt = `[turn:${turnId}]\n${promptBody}`;
     await this.ensureTui(sessionId);
     const wire = this.wirePath(sessionId);
     if (!wire || !fs.existsSync(wire)) throw new Error('Kimi session wire.jsonl not found; cannot capture the reply');
@@ -735,7 +747,7 @@ export class KimiCliClient {
 
     const state = {
       carry: '',
-      needle: String(prompt).slice(0, 80),
+      needle: `[turn:${turnId}]`,
       matched: false,
       text: '',
       done: false,

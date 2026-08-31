@@ -73,6 +73,12 @@ function makeClient({ pane, timeoutMs = 12000, onCacheHintContinue = null, onTmu
 
 // A turn as kimi actually writes it: the usage record lands BEFORE the
 // assistant text, which is why usage.record must not be the finish line.
+// 桥会在 prompt 首行贴 [turn:xxx] 标记，TUI 收到的是带标记那一份。
+// 测试要模拟真实的 wire，就必须用**实际注入的**文本，而不是原始 prompt。
+function writeInjectedTurn(wire, injections, replyText) {
+  writeTurn(wire, injections[0] ?? '', replyText);
+}
+
 function writeTurn(wire, promptText, replyText) {
   const lines = [
     { type: 'turn.prompt', input: [{ type: 'text', text: promptText }] },
@@ -147,7 +153,7 @@ test('a submit-time cache hint chooses Continue as-is without re-pasting', async
       }
       if (key === 'Enter' && downCount === 2) {
         pane = PANE_IDLE;
-        setTimeout(() => writeTurn(wire, prompt, '完整上下文继续'), 50);
+        setTimeout(() => writeInjectedTurn(wire, injections, '完整上下文继续'), 50);
       }
     },
   });
@@ -182,7 +188,7 @@ test('a pre-existing cache hint is continued before the prompt is injected', asy
         return;
       }
       if (key === 'Enter' && dialogHandled) {
-        setTimeout(() => writeTurn(wire, prompt, '先关弹窗再提交'), 50);
+        setTimeout(() => writeInjectedTurn(wire, injections, '先关弹窗再提交'), 50);
       }
     },
   });
@@ -211,17 +217,17 @@ test('a turn that never registers is truncated by the retry cap', async () => {
 
 test('a slow reply is captured, not mistaken for silence', async () => {
   const prompt = 'TG_PRIVATE slow but real';
-  const { client, wire } = makeClient({ pane: PANE_IDLE, timeoutMs: 30000 });
+  const { client, wire, injections } = makeClient({ pane: PANE_IDLE, timeoutMs: 30000 });
   // Reply arrives well after the first self-heal tick would have fired.
-  setTimeout(() => writeTurn(wire, prompt, '我在，只是慢了一点。🐦‍⬛'), 7000);
+  setTimeout(() => writeInjectedTurn(wire, injections, '我在，只是慢了一点。🐦‍⬛'), 7000);
   const reply = await client.runTuiTurn(prompt, 'session_test');
   assert.equal(reply, '我在，只是慢了一点。🐦‍⬛');
 });
 
 test('text emitted after usage.record is still captured', async () => {
   const prompt = 'TG_PRIVATE ordering';
-  const { client, wire } = makeClient({ pane: PANE_IDLE, timeoutMs: 20000 });
-  setTimeout(() => writeTurn(wire, prompt, 'usage 在前，正文在后'), 500);
+  const { client, wire, injections } = makeClient({ pane: PANE_IDLE, timeoutMs: 20000 });
+  setTimeout(() => writeInjectedTurn(wire, injections, 'usage 在前，正文在后'), 500);
   const reply = await client.runTuiTurn(prompt, 'session_test');
   assert.equal(reply, 'usage 在前，正文在后', 'usage.record must not end the turn early');
 });
@@ -267,5 +273,65 @@ test('注入之后 wire 里什么都没有时，仍然照旧失败', async () =>
     () => client.runTuiTurn('TG_PRIVATE 无人应答', 'session_test'),
     /never registered the turn|timed out/i,
     '真的没有产出时不能凭空造一个回复出来',
+  );
+});
+
+// —— 2026-09-01 turn 标记 ——
+//
+// 8/31 那天桥重启 11 次、TUI 注册失败 68 次；而 08-26～08-30 桥没重启，零失败。
+// 根因：matched 用 prompt 前 80 字当指纹，而私聊 prompt 前 80 字全是协议头
+// （"TG_PRIVATE\nFollow the Telegram bridge protocol from AGENTS.md. Reply with the Te"），
+// 任意两条消息完全相同。而桥重启时并不重开 TUI（ensureTui 首行 tuiAlive() 就 return），
+// 于是新桥面对一个还留着上一轮残留的 TUI，拿一个认不出彼此的指纹去猜：
+// 猜不中就重投（她收到"重复投递"），猜错就把上一轮的回复当成这一轮的（把话安错消息）。
+//
+// 现在每轮贴一个唯一标记。这两个测试锁的是两个方向 —— 认得出自己，也认不出别人。
+function writeTurnWithPrompt(wire, promptText, replyText) {
+  const lines = [
+    { type: 'turn.prompt', input: [{ type: 'text', text: promptText }] },
+    { type: 'usage.record', usageScope: 'turn' },
+    {
+      type: 'context.append_loop_event',
+      event: { type: 'content.part', part: { type: 'text', text: replyText } },
+    },
+    { type: 'turn.ended' },
+  ];
+  fs.appendFileSync(wire, `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+}
+
+test('注入的 prompt 首行带唯一 turn 标记', async () => {
+  const { client, injections } = makeClient({
+    pane: PANE_IDLE,
+    timeoutMs: 20000,
+    onTmux: ({ args, wire, injections: seen }) => {
+      if (args[0] !== 'send-keys' || !seen.length) return;
+      const mark = /^\[turn:[a-z0-9]+\]/.exec(seen[0]);
+      if (mark) writeTurnWithPrompt(wire, seen[0], 'ok');
+    },
+  });
+  const reply = await client.runTuiTurn('TG_PRIVATE 你好', 'session_test');
+  assert.equal(reply, 'ok');
+  assert.match(injections[0], /^\[turn:[a-z0-9]+\]\nTG_PRIVATE 你好$/,
+    '标记必须在首行，原文完整跟在后面');
+});
+
+test('别的轮次写进 wire 也不会被认领（这正是错配的来源）', async () => {
+  const { client } = makeClient({
+    pane: PANE_IDLE,
+    timeoutMs: 9000,
+    onTmux: ({ args, wire }) => {
+      if (args[0] !== 'send-keys') return;
+      // 一个协议头完全相同、但 turn 标记不同的轮次 —— 旧实现会把它当成自己的。
+      writeTurnWithPrompt(
+        wire,
+        '[turn:someoneelse]\nTG_PRIVATE Follow the Telegram bridge protocol from AGENTS.md.',
+        '这是上一条消息的回复，不该被当成本轮的',
+      );
+    },
+  });
+  await assert.rejects(
+    () => client.runTuiTurn('TG_PRIVATE 我的消息', 'session_test'),
+    /never registered the turn|timed out/i,
+    '认不出就该老实失败，不能把别人的回复据为己有',
   );
 });

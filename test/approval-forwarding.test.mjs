@@ -31,23 +31,27 @@ function makeClient({ requestUserApproval, timeoutMs = 20000 }) {
   });
 
   const keys = [];
+  const injections = [];
   client.wirePath = () => wire;
   client.ensureTui = async () => {};
   client.tuiAlive = () => true;
   client.capturePane = () => PANE_IDLE;
-  client.tmux = (args) => {
+  client.tmux = (args, input) => {
     if (args[0] === 'send-keys') keys.push(args.at(-1));
+    if (args[0] === 'load-buffer') injections.push(String(input));
     return '';
   };
-  return { client, wire, keys };
+  return { client, wire, keys, injections };
 }
 
 const prompt = 'TG_PRIVATE approval flow';
 
-function writePrompt(wire) {
+// 桥在 prompt 首行贴 [turn:xxx] 标记认领本轮，TUI 收到的是带标记那一份。
+// 这里必须回放**实际注入的**文本，否则模拟出的 wire 与真实情况不符。
+function writePrompt(wire, injections) {
   fs.appendFileSync(wire, `${JSON.stringify({
     type: 'turn.prompt',
-    input: [{ type: 'text', text: prompt }],
+    input: [{ type: 'text', text: injections?.[0] ?? prompt }],
   })}\n`);
 }
 
@@ -72,12 +76,12 @@ function writeReply(wire, text) {
 
 test('a Bash approval is forwarded as a command card and an accept types 1', async () => {
   const seen = [];
-  const { client, wire, keys } = makeClient({
+  const { client, wire, keys, injections } = makeClient({
     requestUserApproval: async (info) => { seen.push(info); return 'accept'; },
   });
 
   setTimeout(() => {
-    writePrompt(wire);
+    writePrompt(wire, injections);
     writeApproval(wire, {
       toolCallId: 'Bash:1',
       toolName: 'Bash',
@@ -99,12 +103,12 @@ test('a Bash approval is forwarded as a command card and an accept types 1', asy
 
 test('a Write approval is forwarded as a file card and a decline types 3', async () => {
   const seen = [];
-  const { client, wire, keys } = makeClient({
+  const { client, wire, keys, injections } = makeClient({
     requestUserApproval: async (info) => { seen.push(info); return 'decline'; },
   });
 
   setTimeout(() => {
-    writePrompt(wire);
+    writePrompt(wire, injections);
     writeApproval(wire, {
       toolCallId: 'Write:1',
       toolName: 'Write',
@@ -122,9 +126,9 @@ test('a Write approval is forwarded as a file card and a decline types 3', async
 });
 
 test('with no approval channel wired the request fails closed, it does not hang', async () => {
-  const { client, wire, keys } = makeClient({ requestUserApproval: null, timeoutMs: 15000 });
+  const { client, wire, keys, injections } = makeClient({ requestUserApproval: null, timeoutMs: 15000 });
   setTimeout(() => {
-    writePrompt(wire);
+    writePrompt(wire, injections);
     writeApproval(wire, {
       toolCallId: 'Bash:2',
       toolName: 'Bash',
@@ -141,11 +145,11 @@ test('with no approval channel wired the request fails closed, it does not hang'
 });
 
 test('a forwarding failure declines instead of letting the tool through', async () => {
-  const { client, wire, keys } = makeClient({
+  const { client, wire, keys, injections } = makeClient({
     requestUserApproval: async () => { throw new Error('telegram down'); },
   });
   setTimeout(() => {
-    writePrompt(wire);
+    writePrompt(wire, injections);
     writeApproval(wire, {
       toolCallId: 'Edit:1',
       toolName: 'Edit',
@@ -163,12 +167,12 @@ test('a forwarding failure declines instead of letting the tool through', async 
 test('time spent waiting for her does not count against the turn timeout', async () => {
   // Turn budget is 6s; she takes 5s to answer. Without crediting the wait back,
   // the turn would die before the reply lands.
-  const { client, wire } = makeClient({
+  const { client, wire, injections } = makeClient({
     requestUserApproval: async () => new Promise((r) => { setTimeout(() => r('accept'), 5000); }),
     timeoutMs: 6000,
   });
   setTimeout(() => {
-    writePrompt(wire);
+    writePrompt(wire, injections);
     writeApproval(wire, {
       toolCallId: 'Bash:3',
       toolName: 'Bash',
