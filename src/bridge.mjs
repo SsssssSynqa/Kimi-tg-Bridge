@@ -2238,9 +2238,19 @@ function recordUpdateFailure(update, error, phase) {
 
   log(`update ${updateId} failed during ${phase}, retry=${retry.attempts} next=${new Date(retry.nextAttemptAt).toISOString()}: ${errorText}`);
   const privateChatId = update.message?.chat?.type === 'private' ? String(update.message.chat.id || '') : '';
+  // 2026-08-31：不再向她本人推「没送出去」这条。
+  //
+  // 她那次问日记，收到的是：一条 Cache 通知 + 这条"没送出去" + 一句冷冰冰的
+  // "重复投递，答案不变"，而 Skald 真正写的完整回复被吞了。三条噪音一条正餐没有。
+  //
+  // 这条通知的问题不只是吵，它**说的还不是真的**：触发点是 matched 判定失败，
+  // 而消息此刻往往已经进了 TUI、agent 甚至已经答完了。告诉她"没送出去、不用重发"，
+  // 她看到的却是对方随后自言自语——比不说更伤。
+  //
+  // 真正的失败她一定会知道：重试耗尽会进 dead-letter 并单独通知（上面那段）。
+  // 中途的每一次重试属于运维细节，写进日志给我们看就够了，不该占用她的屏幕。
   if (retry.attempts === 1 && privateChatId && allowedUserIds.has(privateChatId)) {
-    sendMessage(privateChatId, 'That did not go through. Your message is queued for a local retry — no need to resend it.')
-      .catch((noticeError) => log(`retry notice failed update=${updateId}: ${noticeError.message}`));
+    log(`[retry] update=${updateId} 首次重试（不打扰她，仅记日志）phase=${phase}`);
   } else if (retry.attempts === 1) {
     sendMessage(
       ownerUserId,
