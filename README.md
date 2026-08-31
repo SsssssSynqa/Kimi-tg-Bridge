@@ -85,6 +85,7 @@ Owner-only operations:
 Group commands (see [Dynamic Group Authorization](#dynamic-group-authorization)):
 
 - `/<prefix>_on`, `/<prefix>_off`, `/<prefix>_all`, `/<prefix>_quiet`
+- `/flow <1-200>`, `/flow off`, `/flow`: temporarily override, clear, or inspect the bot-to-bot consecutive-message limit for the current group. The override expires after six hours.
 
 ## Getting Telegram IDs
 
@@ -207,6 +208,11 @@ Two dialogs are invisible from Telegram and are handled for you:
 
 A turn is re-injected at most three times before the bridge gives up; unbounded retries
 would flood the pane with identical pastes.
+
+The reply extractor only accepts text after the matching `turn.prompt`. Text that merely
+arrives after injection may belong to an older terminal turn, so it is never reassigned to
+the new Telegram message. Relay-file markers likewise accept regular files below the relay
+directory only; symlink components are rejected.
 
 ### Group context has a character budget
 

@@ -1,0 +1,8 @@
+*.bak-*
+.state/
+config.json
+.env
+*.log
+attachments/
+
+.local-backups/

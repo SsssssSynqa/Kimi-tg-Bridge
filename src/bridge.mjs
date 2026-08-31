@@ -32,7 +32,7 @@ import { splitTelegramText } from './telegram-text-split.mjs';
 import { createRequire as __flowRequire } from 'node:module';
 // 全家共用的续场开关（/flow N）。四座桥各自独立进程、模块系统还不一样，
 // 所以状态放在一个大家都读的文件里，Synqa 发一条命令四座都认。
-const groupFlow = __flowRequire(import.meta.url)('../../../shared/group-flow.cjs');
+const groupFlow = __flowRequire(import.meta.url)('./group-flow.cjs');
 
 // Synqa 的表情＝放行信号（2026-08-31）。
 //
@@ -73,7 +73,9 @@ async function handleFlowCommand({ rawText, chatId, fromId, messageId, send, isO
   if (!speak) return true;
   if (result.action === 'set') {
     const until = new Date(result.expiresAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-    await send(`续场模式：连发上限临时抬到 ${result.limit}（${until} 自动恢复，或 /flow off 手动关）。全家都收到了。`);
+    // 被削顶时如实说出来，不假装她写的数生效了。
+    const note = result.clamped ? `（你写的是 ${result.asked}，上限 ${result.maxLimit}，按 ${result.limit} 生效）` : '';
+    await send(`续场模式：连发上限临时抬到 ${result.limit}${note}（${until} 自动恢复，或 /flow off 手动关）。全家都收到了。`);
   } else if (result.action === 'clear') {
     await send(result.had ? '续场模式已关，连发上限回到默认。' : '本来就没开着。');
   } else {
@@ -672,7 +674,8 @@ function makeCodexClient() {
   };
 
   if (codexMode === 'kimi') {
-    log(`Kimi mode: spawn-per-turn (kimiPath=${kimiPath})`);
+    const kimiEngine = config.kimiEngine === 'tui' ? 'tui' : 'spawn';
+    log(`Kimi mode: ${kimiEngine === 'tui' ? 'persistent-tui' : 'spawn-per-turn'} (kimiPath=${kimiPath})`);
     // model falls back to kimi's own default_model when unset — the codex
     // default from DEFAULT_CONFIG must never leak into `kimi -m`.
     return new KimiCliClient({
@@ -684,8 +687,8 @@ function makeCodexClient() {
       // so the agent can open the archived original itself. Transcription stays
       // configured for backends without vision; nativeVision picks which one.
       nativeVision: config.nativeVision === true,
-      engine: config.kimiEngine || 'spawn',
-      tmuxSession: config.kimiTmuxSession || 'skald-tg',
+      engine: kimiEngine,
+      tmuxSession: config.tmuxSession || config.kimiTmuxSession || 'skald-tg',
       // Synqa's call (2026-08-06): every approval goes to Telegram. The TUI
       // dialog is invisible from a phone, so an unforwarded request is a turn
       // that silently waits forever.
