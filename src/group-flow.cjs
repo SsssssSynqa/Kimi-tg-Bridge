@@ -50,7 +50,9 @@ function parseFlowCommand(text) {
   const arg = match[1];
   if (!arg) return { action: 'status' };
   if (/^\d+$/.test(arg)) {
-    return { action: 'set', limit: Math.min(Math.max(1, Number(arg)), MAX_LIMIT) };
+    const asked = Number(arg);
+    const limit = Math.min(Math.max(1, asked), MAX_LIMIT);
+    return { action: 'set', limit, asked, clamped: limit !== asked };
   }
   return { action: 'clear' };
 }
@@ -62,7 +64,15 @@ function applyFlowCommand(chatId, command, { ttlMs = 6 * 60 * 60 * 1000, now = D
   if (command.action === 'set') {
     state.groups[key] = { limit: command.limit, setAt: now, expiresAt: now + ttlMs };
     writeFlow(state);
-    return { ok: true, action: 'set', limit: command.limit, expiresAt: state.groups[key].expiresAt };
+    return {
+      ok: true,
+      action: 'set',
+      limit: command.limit,
+      asked: command.asked,
+      clamped: Boolean(command.clamped),
+      maxLimit: MAX_LIMIT,
+      expiresAt: state.groups[key].expiresAt,
+    };
   }
   if (command.action === 'clear') {
     const had = Boolean(state.groups[key]);

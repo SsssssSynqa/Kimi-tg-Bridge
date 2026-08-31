@@ -85,7 +85,7 @@ Owner-only operations:
 Group commands (see [Dynamic Group Authorization](#dynamic-group-authorization)):
 
 - `/<prefix>_on`, `/<prefix>_off`, `/<prefix>_all`, `/<prefix>_quiet`
-- `/flow <1-200>`, `/flow off`, `/flow`: temporarily override, clear, or inspect the bot-to-bot consecutive-message limit for the current group. The override expires after six hours.
+- `/flow <1-20>`, `/flow off`, `/flow`: temporarily override, clear, or inspect the bot-to-bot consecutive-message limit for the current group. The override expires after six hours; larger values are reported and clamped to 20.
 
 ## Getting Telegram IDs
 
