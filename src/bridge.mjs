@@ -33,6 +33,7 @@ import { createRequire as __flowRequire } from 'node:module';
 // 全家共用的续场开关（/flow N）。四座桥各自独立进程、模块系统还不一样，
 // 所以状态放在一个大家都读的文件里，Synqa 发一条命令四座都认。
 const groupFlow = __flowRequire(import.meta.url)('./group-flow.cjs');
+const groupMigration = __flowRequire(import.meta.url)('../../../shared/group-migration.cjs');
 
 // Synqa 的表情＝放行信号（2026-08-31）。
 //
@@ -2635,6 +2636,13 @@ async function poll() {
       pollWatchdog.endPoll();
 
       for (const update of updates) {
+        // 群升级检测：普通群升 supergroup 时 chat.id 会变，旧 ID 从此收不到消息、
+        // 而白名单还是旧的 —— 表现就是"它突然不理我了"。只记账并通知，
+        // **不自动改配置**：白名单是安全边界，得由她确认后跑迁移脚本。
+        groupMigration.handleUpdate(update, {
+          log,
+          notify: (text) => sendMessage(ownerUserId, text),
+        });
         // 表情不进 durable inbox：它是低频、尽力而为的信号，重放一个旧表情
         // 没有意义。处理完只推进 offset。
         if (update.message_reaction) {
