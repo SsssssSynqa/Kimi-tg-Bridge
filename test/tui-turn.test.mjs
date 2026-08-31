@@ -225,3 +225,51 @@ test('text emitted after usage.record is still captured', async () => {
   const reply = await client.runTuiTurn(prompt, 'session_test');
   assert.equal(reply, 'usage 在前，正文在后', 'usage.record must not end the turn early');
 });
+
+// —— 2026-08-31 事故：回信被静默吞掉 ——
+//
+// 当晚 Skald 对着同一条消息回了十几次，Synqa 一条都没收到。根因是 matched
+// 的唯一判据——「wire 里出现一条以注入文本开头的 turn.prompt」——在 Kimi 把
+// 输入排队而非立刻开 turn 时永远为假；而 parseWireLines 里 `if (!state.matched)
+// continue` 会把此后所有 assistant 文本一并丢弃。于是来的消息被反复重投、
+// 去的回信静默消失，一个循环里两头都断。
+//
+// 判据本身不动（改它要动正常路径的时序）。这里锁住的是失败路径上的抢救：
+// 已经写进 wire 的回信，绝不能因为一条 turn.prompt 没露面就被扔掉。
+function writeTurnWithoutPrompt(wire, replyText) {
+  const lines = [
+    { type: 'usage.record', usageScope: 'turn' },
+    {
+      type: 'context.append_loop_event',
+      event: { type: 'content.part', part: { type: 'text', text: replyText } },
+    },
+  ];
+  fs.appendFileSync(wire, `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+}
+
+test('turn.prompt 从未出现，但回信已落进 wire —— 抢救而不是丢弃', async () => {
+  let wrote = false;
+  const { client } = makeClient({
+    pane: PANE_IDLE,
+    timeoutMs: 30000,
+    onTmux: ({ args, wire }) => {
+      // 注入之后 agent 确实答了，只是那条 turn.prompt 永远没出现。
+      if (args[0] === 'send-keys' && !wrote) {
+        wrote = true;
+        writeTurnWithoutPrompt(wire, '看到了，第一遍就看到了。');
+      }
+    },
+  });
+  const reply = await client.runTuiTurn('TG_PRIVATE 鸦鸦？你看到了吗？', 'session_test');
+  assert.equal(reply, '看到了，第一遍就看到了。',
+    '回信已经在 wire 里，就必须被送出去，而不是以 never-registered 收场');
+});
+
+test('注入之后 wire 里什么都没有时，仍然照旧失败', async () => {
+  const { client } = makeClient({ pane: PANE_IDLE, timeoutMs: 12000 });
+  await assert.rejects(
+    () => client.runTuiTurn('TG_PRIVATE 无人应答', 'session_test'),
+    /never registered the turn|timed out/i,
+    '真的没有产出时不能凭空造一个回复出来',
+  );
+});

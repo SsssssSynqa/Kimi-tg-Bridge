@@ -654,7 +654,24 @@ export class KimiCliClient {
         if (promptText.startsWith(state.needle)) state.matched = true;
         continue;
       }
-      if (!state.matched) continue;
+      if (!state.matched) {
+        // 2026-08-31：matched 的唯一判据是「wire 里出现一条以我们注入的文本
+        // 开头的 turn.prompt」。当 Kimi 把输入排进队列而没有立刻开 turn 时，
+        // 这条 turn.prompt 就不会出现，matched 永远为假 —— 而 agent 其实
+        // 处理了、也写了回复。旧实现在这里直接 continue，于是它写的每个字都被
+        // 丢掉，最后以「never registered the turn」收场：来的消息重投、去的
+        // 回信静默消失，一个循环里两头都断。
+        //
+        // 这里只把注入之后出现的 assistant 文本记下来（绝不据此改判 matched，
+        // 正常路径的语义一字不变），留给失败路径做最后抢救。
+        const unmatchedEvent = record.type === 'context.append_loop_event' ? record.event : null;
+        if (unmatchedEvent?.type === 'content.part'
+          && unmatchedEvent.part?.type === 'text'
+          && unmatchedEvent.part.text) {
+          state.unmatchedText += unmatchedEvent.part.text;
+        }
+        continue;
+      }
       // A tool-approval dialog: the turn is now blocked on a keypress that only
       // exists inside tmux. Hand it to the caller loop, which forwards it to
       // Telegram and types the answer back in.
@@ -704,6 +721,7 @@ export class KimiCliClient {
       needle: String(prompt).slice(0, 80),
       matched: false,
       text: '',
+      unmatchedText: '',
       done: false,
       pendingApproval: null,
     };
@@ -781,6 +799,17 @@ export class KimiCliClient {
       if (!state.matched && Date.now() - lastRetry > 5000) {
         lastRetry = Date.now();
         if (retries >= MAX_INJECT_RETRIES) {
+          // 放弃之前先看一眼：注入之后 wire 里到底有没有 agent 写的字。
+          // 有，就说明消息其实送到了、他也答了，只是那条 turn.prompt 没露面。
+          // 这种情况下抛错等于把他的回信扔掉，而他还以为自己说过了。
+          const salvaged = state.unmatchedText.trim();
+          if (salvaged) {
+            this.log(
+              `TUI turn never registered, but ${salvaged.length} chars of reply landed in the wire `
+              + 'after injection — salvaging it instead of discarding the turn',
+            );
+            return salvaged;
+          }
           throw new Error(
             `Kimi TUI never registered the turn after ${MAX_INJECT_RETRIES} injection retries; `
             + 'stopped re-pasting to avoid flooding the pane',
@@ -802,6 +831,13 @@ export class KimiCliClient {
         this.tmux(['send-keys', '-t', this.tmuxSession, 'Enter']);
       }
       if (!this.tuiAlive()) throw new Error('Kimi TUI died mid-turn');
+    }
+    const salvagedOnTimeout = state.unmatchedText.trim();
+    if (!state.matched && salvagedOnTimeout) {
+      this.log(
+        `TUI turn timed out unmatched, but ${salvagedOnTimeout.length} chars of reply are in the wire — salvaging`,
+      );
+      return salvagedOnTimeout;
     }
     throw new Error(`Kimi TUI turn timed out after ${Math.round(this.timeoutMs / 1000)}s`);
   }
