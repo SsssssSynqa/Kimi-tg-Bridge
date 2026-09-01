@@ -617,6 +617,17 @@ export class KimiCliClient {
   // composer visually empty. Re-injecting on that signal appends one more
   // queued item per retry — that is how a downstream fault buried Skald's pane
   // under 900 identical lines. The queue advertises itself with a steer hint.
+  // 队列会用 steer 提示自报家门。但 pane 截图是启发式：提示可能滚出可视区，
+  // 或被 cache 提示框盖住。turn 标记是每轮唯一的，若它已出现在 pane（含
+  // 历史回滚区），那份 paste 就一定没丢——只是还没轮到。这是第二道保险。
+  turnMarkerInPane(needle) {
+    try {
+      return this.tmux(['capture-pane', '-t', this.tmuxSession, '-p', '-S', '-']).includes(needle);
+    } catch {
+      return false;
+    }
+  }
+
   tuiHasQueuedInput(pane = this.capturePane()) {
     return /ctrl-s to steer/i.test(pane);
   }
@@ -839,9 +850,17 @@ export class KimiCliClient {
         if (this.tuiHasQueuedInput()) {
           this.log(`TUI is busy with queued input; not re-pasting (${retries}/${MAX_INJECT_RETRIES})`);
         } else if (this.composerIsEmpty()) {
-          this.log(`TUI turn not registered and composer is empty; re-pasting (${retries}/${MAX_INJECT_RETRIES})`);
-          inject();
-          await sleep(800);
+          // steer 提示只是 pane 启发式，可能滚没或被遮挡。turn 标记若在 pane
+          // 里（队列条目或历史回显），paste 就没丢，只是还没轮到——这时再
+          // inject() 一份，等于把同一批内容在他的上下文里复印一遍。
+          // （2026-08-31 三次重试风暴就是这样把他的 wire 灌到 6MB 的。）
+          if (this.turnMarkerInPane(state.needle)) {
+            this.log(`TUI turn marker already in pane; paste not dropped, only re-sending Enter (${retries}/${MAX_INJECT_RETRIES})`);
+          } else {
+            this.log(`TUI turn not registered and composer is empty; re-pasting (${retries}/${MAX_INJECT_RETRIES})`);
+            inject();
+            await sleep(800);
+          }
         } else {
           this.log(`TUI turn not registered; re-sending Enter (${retries}/${MAX_INJECT_RETRIES})`);
         }

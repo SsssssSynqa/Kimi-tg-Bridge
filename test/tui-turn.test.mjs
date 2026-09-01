@@ -335,3 +335,69 @@ test('别的轮次写进 wire 也不会被认领（这正是错配的来源）',
     '认不出就该老实失败，不能把别人的回复据为己有',
   );
 });
+
+// —— 2026-09-01 粘贴幂等 ——
+//
+// 当晚三次重试风暴的最后一环：turn 一直没注册（排在正在运行的上一轮后面），
+// 桥按「composer 空 = paste 丢了」反复重贴，同一份批次在 Skald 的上下文里被
+// 复印几十份，wire 一路灌到 6MB。turn 标记落地后，pane（含历史）里能看到本轮
+// 标记就是「paste 没丢，只是没轮到」的确定性证据 —— 只补 Enter，绝不重贴。
+function makePaneHistoryClient({ onTmux = null, timeoutMs = 12000 } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skald-wire-'));
+  const wire = path.join(dir, 'wire.jsonl');
+  fs.writeFileSync(wire, '');
+
+  const client = new KimiCliClient({ workdir: dir, threadId: null, engine: 'tui', timeoutMs });
+  client.threadId = 'session_test';
+
+  const injections = [];
+  const keys = [];
+  let queuedMarker = '';
+  client.wirePath = () => wire;
+  client.ensureTui = async () => {};
+  client.tuiAlive = () => true;
+  client.capturePane = () => PANE_IDLE;
+  client.tmux = (args, input) => {
+    if (args[0] === 'load-buffer') {
+      injections.push(String(input));
+      // kimi 收下了这份 paste 并排进队列：pane 历史里随即能查到本轮标记，
+      // 但 wire 里还没开 turn（它排在正在运行的上一轮后面）。
+      queuedMarker = /^\[turn:[a-z0-9]+\]/.exec(String(input))?.[0] || '';
+    }
+    if (args[0] === 'send-keys') keys.push(args.at(-1));
+    if (args[0] === 'capture-pane' && args.includes('-S')) return queuedMarker;
+    if (onTmux) onTmux({ args, input, wire, injections, keys });
+    return '';
+  };
+  return { client, injections, keys };
+}
+
+test('paste 已进队列（标记在 pane 历史里）时，只补 Enter，绝不重贴第二份', async () => {
+  const { client, injections, keys } = makePaneHistoryClient({ timeoutMs: 12000 });
+  await assert.rejects(
+    () => client.runTuiTurn('TG_PRIVATE 排在别人后面', 'session_test'),
+    /never registered|timed out/i,
+  );
+  assert.equal(injections.length, 1, '标记已在 pane 里就是没丢——再贴一份就是复印');
+  assert.ok(keys.length >= 2, '补 Enter 让队列往前走是对的');
+});
+
+test('pane 里查不到本轮标记（paste 真丢了）才允许重贴', async () => {
+  const { client, injections } = makePaneHistoryClient({
+    timeoutMs: 12000,
+    onTmux: ({ args }) => {
+      // 这一份 paste 从未被 kimi 收下：pane 历史里永远没有标记。
+      if (args[0] === 'load-buffer') return;
+    },
+  });
+  // 让历史查询永远落空：paste 没有被 kimi 收下。
+  client.tmux = ((original) => (args, input) => {
+    if (args[0] === 'capture-pane' && args.includes('-S')) return '';
+    return original(args, input);
+  })(client.tmux);
+  await assert.rejects(
+    () => client.runTuiTurn('TG_PRIVATE 真的丢了', 'session_test'),
+    /never registered|timed out/i,
+  );
+  assert.ok(injections.length > 1, '确认丢了的 paste 才允许重贴自愈');
+});
