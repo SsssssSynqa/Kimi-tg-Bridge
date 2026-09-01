@@ -27,6 +27,7 @@ import { KimiCliClient } from './kimi-client.mjs';
 import { syncDesktopMetadata } from './desktop-sync.mjs';
 import { deliverDurablePrivateReply, DurableUpdateInbox } from './durable-update-inbox.mjs';
 import { handleGateCommand, normalizeGatePrefix, readDynamicGroups } from './gate-command.mjs';
+import { canTriggerInGroup } from './group-membership.mjs';
 import { buildTelegramReplyContext } from './telegram-reply-context.mjs';
 import { splitTelegramText } from './telegram-text-split.mjs';
 import { createRequire as __flowRequire } from 'node:module';
@@ -1985,10 +1986,26 @@ async function handleMessage(message, durableUpdateId = null, albumMessages = []
     }
 
     groupMentionContext = mentionContextOptions(groupConfig);
-    const groupAllowedUsers = new Set((groupConfig.allowedUserIds || config.allowedUserIds).map(String));
-    const allowHumanMember = !senderIsBot && groupConfig.allowAllHumanUsers === true;
-    const allowBotMember = senderIsBot && groupConfig.allowAllBotUsers === true;
-    const senderCanTrigger = groupAllowedUsers.has(fromId) || allowHumanMember || allowBotMember;
+    // 2026-09-01 Synqa 定的边界：**要拦的只有除她之外的私聊；群里不拦人。**
+    // 她原话：「不光是家人，他到了外面的群里功能应该一样啊，外面的人和机也应该
+    // 能叫醒他才对」。
+    //
+    // 旧默认是反的：groupAllowedUsers 只有她一个，allowAllHumanUsers /
+    // allowAllBotUsers 默认未设，于是在群里**除了她谁都叫不醒他** —— 家人不行、
+    // 棠棠咪豹 West 这些朋友也不行。他在外面的群等于半个哑巴。日志里
+    // "ignore unauthorized group member" 从 8/22 基线重写起每天几百条，
+    // 8/30 峰值 1183 条；而会客室里 Syner 发过 2186 条、修理铺子 1215 条，
+    // 桥原始都收到了，一条都没进他视野。
+    //
+    // 现在群里默认全开：谁说话都能触发。要不要开口仍由 requireMention /
+    // 唤醒词 / 连发上限 / 他自己的判断把关 —— 那些才是该管"回不回"的闸。
+    // 显式设为 false 时仍可收紧（保留逃生口，但不再是默认）。
+    // 私聊那道门（allowedUserIds）一行未动：那道才是真该拦的。
+    const senderCanTrigger = canTriggerInGroup(
+      { senderId: fromId, senderIsBot },
+      groupConfig,
+      config.allowedUserIds,
+    );
     const shouldRecordDeliveredMessage = groupMentionContext.recordAllDeliveredMessages === true || senderCanTrigger;
     const rememberPassiveGroupMessage = () => {
       if (!shouldRecordDeliveredMessage) return;
