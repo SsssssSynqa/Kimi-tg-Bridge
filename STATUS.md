@@ -1,3 +1,40 @@
+---
+schema-version: 1
+project-id: skald-tg-bridge
+title: Skald Telegram Bridge
+state: waiting
+phase: verification
+scope: current
+waiting-for: Owner 确认迁移后状态与分项台账
+owners: [TBD]
+reviewers: [TBD]
+created-at: 2026-08-31T00:00:00+08:00
+updated-at: 2026-09-07T05:27:00+08:00
+canonical-home: Kimi/skald-tg-bridge
+---
+
+# STATUS · Skald Telegram Bridge
+
+> ⚠️ **本文件由机械迁移生成**（2026-09-07 东八区，Synqa 02:48 授权，规章 §3.2 B′）。
+> **格式已合规，内容未经核实**：迁移脚本不判断项目真实状态——旧文即使自称 complete，
+> 按 §4.8「completed 必须有可核验证据」也不予采信，一律落 `waiting` 等 Owner 确认。
+> 旧文全文原样保留在文末「原文」节（§10：历史文档永不为合规而改写）。
+
+## 分项台账
+
+| 工作项 | 施工人 | 审核人 | 状态 | 证据 | 剩余工作 | 验收边界 | 最近更新 |
+|---|---|---|---|---|---|---|---|
+| （整份待 Owner 按 §4.7 拆分为分项） | TBD | TBD | state=waiting | 旧文自称：running / current revision loaded；自然群聊专项验收仍独立 | 待 Owner 拆分并确认 | 机械迁移**不代签**任何一项已完成 | 2026-08-31 |
+
+## 迁移说明
+
+- 旧文件：`PROJECT_STATUS.md` → `STATUS.md`（同目录改名，不留指针，§3.2）。
+- 旧文自称状态：running / current revision loaded；自然群聊专项验收仍独立
+- `owners` 取自旧文 Owner/主查行（未写明，标 TBD）；`reviewers` 一律 TBD。
+- `created-at` 立项日取自旧文最早日期；`updated-at` 为迁移时刻。
+- **待 Owner 做的事**：把 `state`/`phase` 改成真实状态、按 §4.7 拆分台账、补证据与验收边界。
+
+## 原文（迁移前 `PROJECT_STATUS.md` 全文，一字未改）
 # Skald Telegram Bridge · PROJECT_STATUS
 
 - 状态：running / current revision loaded；自然群聊专项验收仍独立
