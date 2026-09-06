@@ -1,5 +1,7 @@
 # Telegram Kimi Bridge
 
+> **2026-09-07 当前收口**：本轮修复代码 commit 1717250 已合入；2026-09-06 23:24Z bridge PID94144 已重载，原 TUI1992 与 session不变。187/187＋最后增量22/22通过；completed mixed自动拆解仍保留为特殊残项，当前无active欠账。 详细证据与剩余边界：`/Users/arthas/Desktop/Synergia/tasks/tg-three-bridge-audit-20260907/REPAIR_VERIFICATION.md`。下方历史施工文字按其当时日期理解。
+
 一个零依赖的 Telegram Bot API 桥，把 Telegram 机器人接到一个常驻的 **Kimi Code CLI** 会话上——原有的 Codex 引擎也仍然可用。
 
 支持私聊、群聊、仅 @ 触发、增量群上下文、群消息成批回复、bot 接龙上限、发送限流、图片与文件附件、可选的私聊工具执行、需本人拍板的命令审批、崩溃安全的消息投递。在 `tui` 模式下，Kimi 的交互界面常驻在一个 tmux 会话里，你可以随时 attach 进去——Telegram 和终端看到的是同一个正在运行的它。

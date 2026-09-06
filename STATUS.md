@@ -12,6 +12,8 @@ created-at: 2026-08-31T00:00:00+08:00
 updated-at: 2026-09-07T05:27:00+08:00
 canonical-home: Kimi/skald-tg-bridge
 ---
+> **2026-09-07 当前收口**：本轮修复代码 commit 1717250 已合入；2026-09-06 23:24Z bridge PID94144 已重载，原 TUI1992 与 session不变。187/187＋最后增量22/22通过；completed mixed自动拆解仍保留为特殊残项，当前无active欠账。 详细证据与剩余边界：`/Users/arthas/Desktop/Synergia/tasks/tg-three-bridge-audit-20260907/REPAIR_VERIFICATION.md`。下方历史施工文字按其当时日期理解。
+
 
 # STATUS · Skald Telegram Bridge
 
