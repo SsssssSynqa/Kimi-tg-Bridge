@@ -166,6 +166,7 @@ export class GroupConversationBatcher {
         revision: 0,
         importantRevision: 0,
         muted: false,
+        stopRevision: 0,
         botPausedUntil: 0,
         lastFailureNoticeAt: 0,
       });
@@ -206,6 +207,7 @@ export class GroupConversationBatcher {
 
     if (!message.senderIsBot && isStopInstruction(message.text)) {
       state.muted = true;
+      state.stopRevision += 1;
       for (const pending of state.pending) {
         this.settleMessage(pending, { suppressed: true, reason: 'stop-instruction' });
       }
@@ -325,6 +327,7 @@ export class GroupConversationBatcher {
           if (demoted) this.log(`age demotion chat=${chatId}: ${demoted}/${batch.length} messages became background`);
         }
         const revisionAtGeneration = state.revision;
+        const stopAtGeneration = state.stopRevision;
         const importantAtGeneration = state.importantRevision;
         const startedAt = Date.now();
 
@@ -353,11 +356,13 @@ export class GroupConversationBatcher {
           continue;
         }
 
-        if (state.muted) {
+        if (state.stopRevision !== stopAtGeneration) {
           this.log(`stop instruction cancelled the draft chat=${chatId}`);
-          this.settleBatch(batch, { suppressed: true, reason: 'muted-during-generation' });
+          this.settleBatch(batch, { suppressed: true, reason: 'stop-during-generation' });
           activeBatch = [];
-          break;
+          // A later human may already have unmuted this chat. Its new message
+          // stays pending; the stopped draft is never resurrected as carry.
+          continue;
         }
 
         // Ordinary bot chatter no longer invalidates a draft; only an important
@@ -380,7 +385,8 @@ export class GroupConversationBatcher {
           continue;
         }
 
-        const shouldSend = () => !state.muted && state.importantRevision === importantAtGeneration;
+        const shouldSend = () => !state.muted && state.stopRevision === stopAtGeneration
+          && state.importantRevision === importantAtGeneration;
         let fullySent = true;
         // Silence plus reaction: no replies but a react emoji was returned.
         if (!replies.length && replies._react && shouldSend() && this.onReact) {
@@ -405,6 +411,12 @@ export class GroupConversationBatcher {
           }
         }
 
+        if (state.stopRevision !== stopAtGeneration) {
+          this.settleBatch(batch, { suppressed: true, reason: 'stop-during-send' });
+          activeBatch = [];
+          continue;
+        }
+
         if (!fullySent || !shouldSend()) {
           carry = [...batch, ...state.pending];
           state.pending = [];
@@ -427,6 +439,10 @@ export class GroupConversationBatcher {
       this.settleBatch(activeBatch, null, error);
       throw error;
     } finally {
+      if (state.muted) {
+        this.settleBatch(activeBatch, { suppressed: true, reason: 'stop-on-exit' });
+        this.settleBatch(carry, { suppressed: true, reason: 'stop-on-exit' });
+      }
       state.processing = false;
       if (state.pending.length && !state.muted) this.schedule(chatId, state);
     }

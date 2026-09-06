@@ -266,12 +266,18 @@ LaunchAgent、Codex Desktop 侧边栏同步及其取舍，都在上游项目里�
 
 - 准备和入队严格按 `update_id` 顺序；完成状态只在真正发送成功之后才记录。
 - 私聊的模型输出连同生成它的 thread id 会在投递前 fsync，所以"生成完之后崩溃"会重发缓存的那条回复，而不是给 thread 再加一轮模型对话。
+- Kimi TUI 在 paste 前 fsync 稳定请求 ID、唯一 marker 和 submit intent；丢失 tmux 回应或观察超时记为 `outcome-unknown`，只观察原轮，不能因 pane 中看不到它而重贴。只有同一 marker 确实仍在 composer 时才有限次补 Enter。
+- 未完成群轮的只读 guard 随真实 turn 生命周期，不随桥观察者 PID/TTL 失效；收到同一 marker 的 `turn.ended` 并持久化回复后才释放。未知旧轮未决时不启动新模型请求、不自动重建 TUI，也不替换或拆分 session/history。
+- 私聊/群聊长回复逐 chunk 持久化已知 ACK，再做日志和限流记账；重启跳过已知成功片段，未知网络结果仍保留 at-least-once。
+- 相册在预处理/推理前冻结原主 update ID 与完整成员；重放沿用原批、单事件完成全批。升级前孤儿或迟到成员保留待核，不另造模型身份。静默群相册每张图都按自己的 message/update ID 存档。
+- JSONL 尾部残片与下一次追加分隔，原字节和 SHA-256 留在只追加 recovery sidecar；无法匹配修复凭据的中间损坏直接报错，不静默丢记录。
+- 撤销授权的群不再精确重放模型/发送；停机协议保留的群记录继续等待，可投递的私聊不被其阻塞。stop 后发送中的 completion 也会终结，紧接着解除静音不会复活旧轮。
 - 群聊生成会 fsync 精确的批次成员、解析出的回复、生成用的 thread，以及每条回复的 ack。恢复时绝不会把旧批次和新消息混编，也不会重发本地已确认的回复。
 - `/new`、`/resume`、`/reload_config`、`/retry_update` 和两个重启命令都走 operation intent/result 日志，重放不会重复已完成的切换，也不会把重启打成死循环。
 - 连续失败会指数退避，最后进一条看得见的死信记录，而不是悄悄跳过。`/status` 看计数，`/retry_update <id>` 放回一条。
 - 运维日志会压缩，但每条被接收的原始 update 还会另外 fsync 一份到只追加的存档里，那个存档永不轮转、永不压缩。
 
-投递是刻意做成 at-least-once 的。极少数情况下仍可能重复发出一条消息：Telegram 已经接收了 `sendMessage`，但网络响应在桥观察到之前丢了——Telegram 没有提供任何幂等键能堵上这个缝。但**重复的模型对话**不会发生，缓存的输出挡住了。
+投递是刻意做成 at-least-once 的。极少数情况下仍可能重复发出一条消息：Telegram 已经接收了 `sendMessage`，但网络响应在桥观察到之前丢了——Telegram 没有提供任何幂等键能堵上这个缝。新版本 Kimi TUI 的 submit 收据还覆盖“模型可能已收到、回复尚未缓存”的区间：观察失败不等于没投递，重试只读同一 session/wire marker，不再粘贴同一请求，也不消耗额外模型尝试次数。升级前没有 submit 收据的未知请求仍需据证复核；这不承诺其他 engine 或 Telegram 端 exactly-once。
 
 ## 动态群授权
 
@@ -407,3 +413,9 @@ launchctl print gui/$(id -u)/com.example.kimi-bridge
 ## License
 
 MIT
+
+### 补读恢复与私聊通知
+
+补读通知走私聊发送、不进模型；稳定 noticeId 与逐 chunk ACK 耐久保存，只有实际发送确认才标记已通知。新包/已读状态使旧通知失效；磁盘或完整性未知保留待重试。`/catchup` 仍在同一个完整主会话按顺序读当前未读包族。
+
+恢复先看整个耐久群批的分类。仅新协议且可证未提交的批次允许解组/重绑定窗口外触发；跨窗相册保留原完整说明、图片和原始 source IDs，窗口内成员只作为同相册上下文，只有窗口外成员可成为回复目标。已完成且全员终态的批次保留原 reply/attempt/ACK 证据。已接受未知或 legacy 缺收据不重新生成；completed mixed 若原回复只关联窗口内目标，继续保留待明确处置，本版本不擅改回复语义、不声称自动恢复。

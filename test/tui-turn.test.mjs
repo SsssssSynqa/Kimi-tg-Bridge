@@ -200,18 +200,18 @@ test('a pre-existing cache hint is continued before the prompt is injected', asy
   assert.deepEqual(notices, [{ scene: 'pre-submit', threadId: 'session_test' }]);
 });
 
-test('a turn that never registers is truncated by the retry cap', async () => {
-  const { client, injections } = makeClient({ pane: PANE_IDLE, timeoutMs: 60000 });
+test('a turn that never registers stays unknown without re-paste', async () => {
+  const { client, injections } = makeClient({ pane: PANE_IDLE, timeoutMs: 6000 });
   await assert.rejects(
     () => client.runTuiTurn('TG_PRIVATE never lands', 'session_test'),
-    /after 3 injection retries/,
+    /outcome-unknown/,
     'the self-heal must stop instead of re-pasting for the whole timeout',
   );
   // 1 initial injection + at most 3 retries. The pre-fix loop would have
   // pasted ~12 times in the same window (and hundreds over a long timeout).
   assert.ok(
-    injections.length <= 4,
-    `expected at most 4 pastes, got ${injections.length}`,
+    injections.length === 1,
+    `expected exactly one paste, got ${injections.length}`,
   );
 });
 
@@ -379,10 +379,10 @@ test('paste 已进队列（标记在 pane 历史里）时，只补 Enter，绝�
     /never registered|timed out/i,
   );
   assert.equal(injections.length, 1, '标记已在 pane 里就是没丢——再贴一份就是复印');
-  assert.ok(keys.length >= 2, '补 Enter 让队列往前走是对的');
+  assert.equal(keys.length, 1, '历史不是 composer，不额外提交 Enter');
 });
 
-test('pane 里查不到本轮标记（paste 真丢了）才允许重贴', async () => {
+test('pane 里查不到本轮标记不证明 paste 丢失，保持 unknown', async () => {
   const { client, injections } = makePaneHistoryClient({
     timeoutMs: 12000,
     onTmux: ({ args }) => {
@@ -399,5 +399,5 @@ test('pane 里查不到本轮标记（paste 真丢了）才允许重贴', async 
     () => client.runTuiTurn('TG_PRIVATE 真的丢了', 'session_test'),
     /never registered|timed out/i,
   );
-  assert.ok(injections.length > 1, '确认丢了的 paste 才允许重贴自愈');
+  assert.equal(injections.length, 1, '观察不到不等于没接收，禁止重贴');
 });

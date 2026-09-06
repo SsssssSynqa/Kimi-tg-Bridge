@@ -206,8 +206,14 @@ Two dialogs are invisible from Telegram and are handled for you:
 - **Cache expiry** — answered automatically with *Continue as-is*, preserving the full
   context, and logged so the choice is visible.
 
-A turn is re-injected at most three times before the bridge gives up; unbounded retries
-would flood the pane with identical pastes.
+A stable Telegram request gets a durable marker and a submit-intent receipt before paste.
+After that boundary, timeout or a lost tmux response becomes `outcome-unknown`: recovery
+only watches that same session/wire marker and never pastes the request again. Enter may
+be retried at most three times only while the exact marker remains in the composer.
+An unresolved group turn keeps its read-only guard across observer timeout and bridge
+restart; PID death or an expired observer timeout is not evidence that the TUI finished.
+A new request or explicit session switch waits for the original turn to finish; no
+replacement session or split history is created.
 
 The reply extractor only accepts text after the matching `turn.prompt`. Text that merely
 arrives after injection may belong to an older terminal turn, so it is never reassigned to
@@ -280,12 +286,19 @@ Every inbound update is fsync'd to a journal **before** the Telegram poll offset
 
 - Preparation and enqueue happen in `update_id` order; completion is recorded only after the actual send finishes.
 - Private model output and its generating thread id are fsync'd before delivery, so a crash after generation re-sends the cached reply rather than adding a second model turn to the thread.
+- Long private/group replies journal each acknowledged chunk before bookkeeping; restart skips those exact chunks and keeps unknown network outcomes at-least-once.
+- Album membership freezes before preparation/inference: original primary ID and full member set replay together, with one atomic completion event. Legacy orphan/late membership stays held without generating under a new identity. Passive group albums archive every image with its own message/update ID.
+- A torn final JSONL record is separated from the next append; exact damaged bytes and SHA-256 remain in an append-only recovery sidecar. Unrecognized middle corruption raises an error rather than silently losing records.
+- Revoked groups cannot exact-replay model/send work; downtime-held groups remain pending while eligible private updates can progress. A stop settles active delivery even if a human immediately unmutes the group.
 - Group generation fsyncs the exact batch membership, the parsed replies, the generating thread, and each accepted reply index. Recovery never regroups an old batch with newer input, and never resends a reply already acknowledged locally.
 - `/new`, `/resume`, `/reload_config`, `/retry_update` and both restart commands use an operation intent/result journal, so a replay does not repeat a completed thread switch or loop a restart.
 - Repeated failures back off exponentially and end in a visible dead-letter entry instead of silently advancing. `/status` shows the counts; `/retry_update <id>` requeues one.
 - The operational journal compacts over time, but every accepted raw update is also fsync'd once to an append-only archive that is never rotated.
 
-Delivery is intentionally at-least-once. A rare duplicate outbound message is still possible if Telegram accepts `sendMessage` but the network response is lost before the bridge observes it — Telegram exposes no idempotency key that can close that gap. A duplicate *model turn* is prevented by the cached output.
+Delivery is intentionally at-least-once. A rare duplicate outbound message is still possible if Telegram accepts `sendMessage` but the network response is lost before the bridge observes it — Telegram exposes no idempotency key that can close that gap. For newly journaled Kimi TUI requests, durable submit identity covers the interval before
+output is captured as well; observer-only retries do not consume another model attempt.
+Pre-upgrade unknown requests without a submit receipt still require evidence-based review;
+this does not claim exactly-once behavior for other engines or Telegram transport.
 
 ## Dynamic Group Authorization
 
@@ -421,3 +434,18 @@ launchctl print gui/$(id -u)/com.example.kimi-bridge
 ## License
 
 MIT
+
+### Catchup recovery and owner notices
+
+Catchup notices are private transport messages, not model turns. Their stable notice ID and
+per-chunk send receipts survive restart; only confirmed delivery marks a notice acknowledged.
+A newer package/read revision supersedes stale notices, while I/O uncertainty remains retryable.
+`/catchup` continues reading the current unread package family in the same full session.
+
+Recovery classifies whole persisted groups before settling individual members. Only a newly
+journaled group proven not submitted can be dissolved/rebound for outside-window triggers.
+A cross-window album keeps its exact original caption/media as context and only outside-window
+members become reply targets. Completed all-terminal groups keep original reply/attempt/ACK
+evidence. Unknown or legacy receipt-less accepted work is never silently re-generated.
+Completed mixed batches whose cached output only targets the old window remain retained for
+explicit disposition; this version does not invent a new target or claim automatic recovery.

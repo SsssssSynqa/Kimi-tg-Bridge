@@ -1,8 +1,11 @@
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
+import { writePrivateJson } from './durable-files.mjs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
+import { KimiTurnLedger, pendingTurnError } from './kimi-turn-ledger.mjs';
 import { loadVisionConfig, transcribeImages } from './vision-transcribe.mjs';
 
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
@@ -15,28 +18,27 @@ const RELAY_DIR = '/tmp/skald-relay';
 const FILE_RELAY_RE = /\[SKALD:FILE\](.+?)\[\/SKALD:FILE\]/g;
 
 // The directory must exist before Skald's Write tool targets it, and /tmp is
-// cleared on reboot — so ensure it at import time and again per turn rather
-// than once at bridge startup.
-function ensureRelayDir(log = () => {}) {
+// cleared on reboot — ensure it before running the model and when resolving
+// a marker. Importing this module must not mutate the real runtime directory.
+function ensureRelayDir(log = () => {}, directory = RELAY_DIR) {
   try {
-    fs.mkdirSync(RELAY_DIR, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   } catch (error) {
-    log(`file relay: cannot create ${RELAY_DIR}: ${error.message}`);
+    log(`file relay: cannot create ${directory}: ${error.message}`);
   }
 }
 
-ensureRelayDir();
 
-function relayPathIsSafe(resolved, log) {
-  const relative = path.relative(RELAY_DIR, resolved);
+function relayPathIsSafe(resolved, log, directory = RELAY_DIR) {
+  const relative = path.relative(directory, resolved);
   if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    log(`file relay rejected: ${resolved} is outside ${RELAY_DIR}`);
+    log(`file relay rejected: ${resolved} is outside ${directory}`);
     return false;
   }
   // A lexical prefix check is not enough: a model-created symlink below the
   // relay directory can still point at an arbitrary readable file. Reject a
   // symlink at every path component before opening the final regular file.
-  let cursor = RELAY_DIR;
+  let cursor = directory;
   for (const segment of relative.split(path.sep)) {
     cursor = path.join(cursor, segment);
     const stat = fs.lstatSync(cursor);
@@ -48,12 +50,12 @@ function relayPathIsSafe(resolved, log) {
   return true;
 }
 
-function substituteMarkers(text, log) {
+function substituteMarkers(text, log, options = {}) {
   return text.replace(FILE_RELAY_RE, (match, rawPath) => {
     const filePath = rawPath.trim();
     const resolved = path.resolve(filePath);
     try {
-      if (!relayPathIsSafe(resolved, log)) return match;
+      if (!relayPathIsSafe(resolved, log, options.relayDir)) return match;
       const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
       const fd = fs.openSync(resolved, flags);
       let content;
@@ -67,7 +69,8 @@ function substituteMarkers(text, log) {
         fs.closeSync(fd);
       }
       log(`file relay: read ${content.length} chars from ${resolved}`);
-      try { fs.unlinkSync(resolved); } catch {}
+      if (options.consume !== false) { try { fs.unlinkSync(resolved); } catch {} }
+      options.onRead?.(resolved);
       return content;
     } catch (error) {
       log(`file relay: failed to read ${resolved}: ${error.message}`);
@@ -83,12 +86,12 @@ function substituteMarkers(text, log) {
 // returns [] — the reply never reaches Telegram, and the relay file is already
 // deleted by then. So decode the envelope first and substitute into the parsed
 // values, where any byte is safe.
-function substituteInJsonValues(value, log) {
-  if (typeof value === 'string') return substituteMarkers(value, log);
-  if (Array.isArray(value)) return value.map((item) => substituteInJsonValues(item, log));
+function substituteInJsonValues(value, log, options) {
+  if (typeof value === 'string') return substituteMarkers(value, log, options);
+  if (Array.isArray(value)) return value.map((item) => substituteInJsonValues(item, log, options));
   if (value && typeof value === 'object') {
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, substituteInJsonValues(item, log)]),
+      Object.entries(value).map(([key, item]) => [key, substituteInJsonValues(item, log, options)]),
     );
   }
   return value;
@@ -114,22 +117,21 @@ function parseJsonEnvelope(text) {
   }
 }
 
-export function resolveFileRelay(text, log = () => {}) {
-  ensureRelayDir(log);
+export function resolveFileRelay(text, log = () => {}, options = {}) {
   if (!text || !text.includes('[SKALD:FILE]')) return text;
+  ensureRelayDir(log, options.relayDir);
 
   const envelope = parseJsonEnvelope(text);
   if (envelope) {
-    return JSON.stringify(substituteInJsonValues(envelope, log));
+    return JSON.stringify(substituteInJsonValues(envelope, log, options));
   }
 
-  return substituteMarkers(text, log);
+  return substituteMarkers(text, log, options);
 }
 
-// How many times a TUI turn may be re-injected before the bridge gives up.
-// Unbounded retries turn a downstream fault into a flood of identical pastes
-// in Skald's pane, which is noise for him and alarming for Synqa.
-const MAX_INJECT_RETRIES = 3;
+// Only retry Enter for the exact marker still visible in the composer.
+// Never re-paste a request whose acceptance is unknown.
+const MAX_ENTER_RETRIES = 3;
 
 // KimiCliClient drives the Kimi Code CLI in headless prompt mode. Unlike the
 // Codex app-server there is no persistent child process: every turn spawns
@@ -153,6 +155,8 @@ export class KimiCliClient {
     engine = 'spawn',
     tmuxSession = 'skald-tg',
     tmuxBin = '/usr/local/bin/tmux',
+    turnStateDir = null,
+    relayDir = RELAY_DIR,
     onReady,
     onThreadChange,
     onSecurityEvent,
@@ -167,6 +171,7 @@ export class KimiCliClient {
     log = () => {},
   } = {}) {
     this.kimiPath = kimiPath;
+    this.relayDir = relayDir;
     this.workdir = workdir;
     this.threadId = threadId || null;
     this.model = String(model || '').trim();
@@ -202,14 +207,20 @@ export class KimiCliClient {
     // clears it — never a silent replacement session.
     this.resumeBlocked = null;
     this.readOnlyGuardPath = path.join(this.workdir, '.state', 'group-readonly.json');
+    this.turnLedger = new KimiTurnLedger(turnStateDir || path.join(this.workdir, '.state', 'kimi-turns'));
+    this.lastTurnRecord = null;
+    const pendingTurns = this.turnLedger.pending();
+    for (const pending of pendingTurns) {
+      if (pending.toolMode === 'read-only') this.writeReadOnlyGuard(pending);
+    }
 
     if (this.threadId) {
       // Kimi has no cheap "validate session" call; the persisted id is
       // adopted as locked and the first real turn is the true validation.
       this.log(`Kimi client locked to persisted session ${this.threadId} (validated on first turn)`);
       if (this.onReady) this.onReady(this.threadId);
-      if (this.engine === 'tui') {
-        // Bring the visible TUI up right away so attaching works before the
+      if (this.engine === 'tui' && pendingTurns.length === 0) {
+        // No auto-start while a prior submit is unresolved. Bring the visible TUI up right away so attaching works before the
         // first TG message arrives. Failures surface on the first turn.
         this.ensureTui(this.threadId).catch((error) => this.log(`TUI pre-start failed: ${error.message}`));
       }
@@ -227,6 +238,7 @@ export class KimiCliClient {
   }
 
   runKimi(prompt, sessionId) {
+    ensureRelayDir(this.log, this.relayDir);
     return new Promise((resolve, reject) => {
       const child = spawn(this.kimiPath, this.buildArgs(prompt, sessionId), {
         cwd: this.workdir,
@@ -366,10 +378,18 @@ export class KimiCliClient {
     // interactive TUI. A brand-new session (no id yet) still bootstraps via
     // one headless spawn — the TUI needs an id to resume.
     if (this.engine === 'tui' && lockedSession) {
-      const rawReply = await this.withToolMode(options.toolMode, () => this.runTuiTurn(prompt, lockedSession));
-      const reply = resolveFileRelay(rawReply, this.log);
+      const rawReply = await this.runTuiTurn(prompt, lockedSession, options);
+      const record = this.lastTurnRecord;
+      const readPaths = [];
+      const reply = record?.reply ?? resolveFileRelay(rawReply, this.log, {
+        relayDir: this.relayDir, consume: false, onRead: (filePath) => readPaths.push(filePath),
+      });
+      // Resolve relay contents durably before cleanup. A restart between file
+      // read and inbox completion must not lose the only sendable reply.
+      if (record && record.reply === undefined) this.lastTurnRecord = this.turnLedger.save(record, { reply });
+      for (const filePath of readPaths) { try { fs.unlinkSync(filePath); } catch {} }
       if (!reply && !options.allowEmpty) throw new Error('Kimi produced no sendable text');
-      return { reply, threadId: this.threadId };
+      return { reply, threadId: record?.sessionId || this.threadId };
     }
 
     const { code, stdout, stderr } = await this.withToolMode(
@@ -395,7 +415,7 @@ export class KimiCliClient {
       this.threadId = sessionId;
       if (this.onReady) this.onReady(sessionId);
     }
-    const reply = resolveFileRelay(rawReply, this.log);
+    const reply = resolveFileRelay(rawReply, this.log, { relayDir: this.relayDir });
     if (!reply && !options.allowEmpty) throw new Error('Kimi produced no sendable text');
     if (this.engine === 'tui') {
       try { await this.ensureTui(this.threadId); } catch (error) { this.log(`TUI start deferred: ${error.message}`); }
@@ -407,8 +427,8 @@ export class KimiCliClient {
   // TUI engine internals
   // ------------------------------------------------------------------
 
-  writeReadOnlyGuard() {
-    const nonce = crypto.randomUUID();
+  writeReadOnlyGuard(turnRecord = null) {
+    const nonce = turnRecord?.marker || crypto.randomUUID();
     const guard = {
       version: 1,
       mode: 'group-read-only',
@@ -416,12 +436,12 @@ export class KimiCliClient {
       ownerPid: process.pid,
       createdAt: new Date().toISOString(),
       expiresAt: Date.now() + this.timeoutMs + 60_000,
+      ...(turnRecord ? {
+        version: 2, turnKey: turnRecord.requestId,
+        receiptPath: this.turnLedger.filePath(turnRecord.requestId),
+      } : {}),
     };
-    fs.mkdirSync(path.dirname(this.readOnlyGuardPath), { recursive: true, mode: 0o700 });
-    const temporary = `${this.readOnlyGuardPath}.${process.pid}.${nonce}.tmp`;
-    fs.writeFileSync(temporary, `${JSON.stringify(guard)}\n`, { mode: 0o600 });
-    fs.renameSync(temporary, this.readOnlyGuardPath);
-    fs.chmodSync(this.readOnlyGuardPath, 0o600);
+    writePrivateJson(this.readOnlyGuardPath, guard);
     return nonce;
   }
 
@@ -434,13 +454,16 @@ export class KimiCliClient {
     }
   }
 
-  async withToolMode(toolMode, operation) {
+  async withToolMode(toolMode, operation, { turnRecord = null } = {}) {
     if (toolMode !== 'read-only') return operation();
-    const nonce = this.writeReadOnlyGuard();
+    const nonce = this.writeReadOnlyGuard(turnRecord);
     try {
       return await operation();
     } finally {
-      this.clearReadOnlyGuard(nonce);
+      const current = turnRecord ? this.turnLedger.read(turnRecord.requestId) : null;
+      if (!turnRecord || ['prepared', 'completed'].includes(current?.state)) this.clearReadOnlyGuard(nonce);
+      // A persistent TUI can outlive this observer. Its active guard deliberately
+      // survives timeout/crash until the same recorded turn.ended is observed.
     }
   }
 
@@ -633,7 +656,10 @@ export class KimiCliClient {
   }
 
   async ensureTui(sessionId) {
-    if (this.tuiAlive()) return;
+    if (this.tuiAlive()) { ensureRelayDir(this.log, this.relayDir); return; }
+    const [pending] = this.turnLedger.pending();
+    if (pending) throw pendingTurnError(pending, 'TUI is absent while a prior submit is unresolved; no auto-start');
+    ensureRelayDir(this.log, this.relayDir);
     // Disk check first so a vanished session fails closed instead of leaving
     // a dead tmux and a confusing generic error.
     if (!this.sessionDirOnDisk(sessionId)) {
@@ -724,151 +750,154 @@ export class KimiCliClient {
     }
   }
 
-  async runTuiTurn(promptBody, sessionId) {
-    // 每轮一个唯一标记，贴在 prompt 首行。
-    //
-    // 旧实现用 prompt 前 80 字当指纹认自己那一轮，而私聊 prompt 前 80 字是
-    // "TG_PRIVATE\nFollow the Telegram bridge protocol from AGENTS.md. Reply with the Te"
-    // —— 纯协议头，任意两条消息完全相同。桥重启后 TUI 并不重开（ensureTui 首行
-    // 就是 tuiAlive() 则 return），于是新桥面对一个还留着上一轮残留的 TUI，
-    // 只能靠这个认不出彼此的指纹去猜，猜错就重投、或把上一轮的回复认成这一轮的。
-    // 2026-08-31 那天桥重启 11 次，失败 68 次；而 08-26 到 08-30 没重启，零失败。
-    const turnId = `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-    const prompt = `[turn:${turnId}]\n${promptBody}`;
-    await this.ensureTui(sessionId);
-    const wire = this.wirePath(sessionId);
-    if (!wire || !fs.existsSync(wire)) throw new Error('Kimi session wire.jsonl not found; cannot capture the reply');
+  recordedWireState(record) {
+    const state = { carry: '', needle: record.marker, matched: false, text: '', done: false, pendingApproval: null };
+    if (!record.wirePath || !fs.existsSync(record.wirePath)) return state;
+    const fd = fs.openSync(record.wirePath, 'r');
+    try {
+      const size = fs.fstatSync(fd).size;
+      if (size < record.wireOffset) throw pendingTurnError(record, 'wire shrank; acceptance cannot be disproved');
+      const decoder = new StringDecoder('utf8');
+      const buffer = Buffer.alloc(64 * 1024); let offset = record.wireOffset;
+      while (offset < size && !state.done) {
+        const length = Math.min(buffer.length, size - offset);
+        const read = fs.readSync(fd, buffer, 0, length, offset);
+        if (read <= 0) break;
+        offset += read;
+        this.parseWireLines(decoder.write(buffer.subarray(0, read)), state);
+      }
+    } finally { fs.closeSync(fd); }
+    return state;
+  }
 
-    // Wait (bounded) for the composer to be free of half-typed text so the
-    // injected message does not splice into whatever Synqa is typing, and for
-    // any queued sends to drain — injecting into a busy TUI only lengthens its
-    // queue, it does not start a turn.
-    const composerDeadline = Date.now() + 20000;
-    while (Date.now() < composerDeadline) {
-      if (await this.continueCacheExpiryHintIfPresent('pre-submit')) continue;
-      const pane = this.capturePane();
-      if (this.composerIsEmpty(pane) && !this.tuiHasQueuedInput(pane)) break;
-      await sleep(500);
+  captureCompletedTurn(record, rawReply) {
+    const completed = this.turnLedger.read(record.requestId);
+    if (completed?.state === 'completed') return completed;
+    const readPaths = [];
+    const reply = resolveFileRelay(rawReply, this.log, {
+      relayDir: this.relayDir, consume: false, onRead: (filePath) => readPaths.push(filePath),
+    });
+    // Include resolved relay text in the same durable terminal receipt before
+    // freeing the queue. A later model turn may reuse the same relay filename.
+    const saved = this.turnLedger.save(record, {
+      state: 'completed', rawReply, reply, completedAt: new Date().toISOString(),
+    });
+    for (const filePath of readPaths) { try { fs.unlinkSync(filePath); } catch {} }
+    return saved;
+  }
+
+  reconcilePendingTurns(exceptRequestId = null) {
+    for (const record of this.turnLedger.pending()) {
+      if (record.toolMode === 'read-only') this.writeReadOnlyGuard(record);
+      if (record.requestId === exceptRequestId) continue;
+      const state = this.recordedWireState(record);
+      if (!state.done) throw pendingTurnError(record, 'a prior accepted/submitted turn is still unresolved');
+      this.captureCompletedTurn(record, state.text.trim());
+      this.clearReadOnlyGuard(record.marker);
     }
-    const preSubmitPane = this.capturePane();
-    if (this.tuiHasQueuedInput(preSubmitPane)) {
-      throw new Error('Kimi TUI still has queued input after 20s; refusing to inject into a busy TUI');
+  }
+
+  async runTuiTurn(promptBody, sessionId, options = {}) {
+    const requestId = String(options.requestId || `terminal-operation:${crypto.randomUUID()}`);
+    this.reconcilePendingTurns(requestId);
+    let record = this.turnLedger.read(requestId);
+    if (record?.state === 'completed') {
+      this.lastTurnRecord = record;
+      this.clearReadOnlyGuard(record.marker);
+      return record.rawReply || '';
     }
-    if (!this.composerIsEmpty(preSubmitPane)) this.log('TUI composer still has text after 20s; injecting anyway');
-
-    const state = {
-      carry: '',
-      needle: `[turn:${turnId}]`,
-      matched: false,
-      text: '',
-      done: false,
-      pendingApproval: null,
-    };
-    let offset = fs.statSync(wire).size;
-
-    // Inject via bracketed paste (multiline-safe), then submit.
-    const inject = () => {
-      this.tmux(['load-buffer', '-b', 'skald-bridge-turn', '-'], prompt);
-      this.tmux(['paste-buffer', '-b', 'skald-bridge-turn', '-t', this.tmuxSession, '-p', '-d']);
-    };
-    inject();
-    await sleep(800);
-    this.tmux(['send-keys', '-t', this.tmuxSession, 'Enter']);
-
-    let deadline = Date.now() + this.timeoutMs;
-    let lastRetry = Date.now();
-    let retries = 0;
-    let cacheHintHandledAt = null;
-    while (Date.now() < deadline) {
-      await sleep(500);
-      let stat;
-      try { stat = fs.statSync(wire); } catch { continue; }
-      if (stat.size > offset) {
-        const fd = fs.openSync(wire, 'r');
+    if (!record) {
+      // Failures before a submit intent are safe to retry: no text was injected.
+      await this.ensureTui(sessionId);
+      const wire = this.wirePath(sessionId);
+      if (!wire || !fs.existsSync(wire)) throw new Error('Kimi session wire.jsonl not found; cannot capture the reply');
+      record = this.turnLedger.prepare({ requestId, sessionId, prompt: promptBody,
+        toolMode: options.toolMode, wirePath: wire, wireOffset: fs.statSync(wire).size });
+    }
+    const prompt = `${record.marker}\n${promptBody}`;
+    return this.withToolMode(record.toolMode, async () => {
+      if (record.state === 'prepared') {
+        if (record.sessionId !== sessionId) throw new Error('A prepared Kimi request belongs to a different session; not submitted');
+        await this.ensureTui(sessionId);
+        const composerDeadline = Date.now() + 20000;
+        while (Date.now() < composerDeadline) {
+          if (await this.continueCacheExpiryHintIfPresent('pre-submit')) continue;
+          const pane = this.capturePane();
+          if (this.composerIsEmpty(pane) && !this.tuiHasQueuedInput(pane)) break;
+          await sleep(500);
+        }
+        const pane = this.capturePane();
+        if (this.tuiHasQueuedInput(pane)) throw new Error('Kimi TUI still has queued input after 20s; no submit was attempted');
+        if (!this.composerIsEmpty(pane)) throw new Error('Kimi TUI composer still contains terminal input after 20s; no submit was attempted');
+        // Persist the irreversible boundary BEFORE either paste or Enter.
+        // If we crash after this fsync, only observation of this marker is safe.
+        this.tmux(['load-buffer', '-b', 'skald-bridge-turn', '-'], prompt);
+        record = this.turnLedger.save(record, { state: 'submitted', submittedAt: new Date().toISOString() });
         try {
-          const buf = Buffer.alloc(stat.size - offset);
-          fs.readSync(fd, buf, 0, buf.length, offset);
-          offset = stat.size;
-          this.parseWireLines(buf.toString('utf8'), state);
-        } finally {
-          fs.closeSync(fd);
+          this.tmux(['paste-buffer', '-b', 'skald-bridge-turn', '-t', this.tmuxSession, '-p', '-d']);
+          await sleep(800);
+          this.tmux(['send-keys', '-t', this.tmuxSession, 'Enter']);
+        } catch (error) {
+          record = this.turnLedger.save(record, { state: 'outcome-unknown', lastError: String(error.message || error).slice(0, 500) });
+          throw pendingTurnError(record, 'submit transport failed after durable intent');
         }
       }
-      if (state.done) return state.text.trim();
-      // The submit may have been swallowed into Kimi's cache-expiry dialog.
-      // Resolve the approved choice before the generic self-heal can mistake
-      // the editor replacement for a dropped paste and hit the default item.
-      if (!state.matched && await this.continueCacheExpiryHintIfPresent('submit')) {
-        cacheHintHandledAt = Date.now();
-        lastRetry = cacheHintHandledAt;
-        continue;
-      }
-      // Kimi owns the original stashed prompt after `Continue as-is`; never
-      // inject a duplicate while it is releasing that prompt back to the turn.
-      if (!state.matched && cacheHintHandledAt !== null) {
-        if (Date.now() - cacheHintHandledAt > 30000) {
-          throw new Error(
-            'Kimi continued past the cache-expiry hint but the stashed prompt did not register within 30s; '
-            + 'stopped without re-pasting',
-          );
-        }
-        continue;
-      }
-      // Blocked on an approval dialog: ask Synqa, type her answer back, and do
-      // not count the time she took against this turn's timeout — nor mistake
-      // the pause for a dropped keystroke.
-      if (state.pendingApproval) {
-        const request = state.pendingApproval;
-        state.pendingApproval = null;
-        const waitedFrom = Date.now();
-        await this.resolveApproval(request);
-        const waited = Date.now() - waitedFrom;
-        deadline += waited;
-        lastRetry = Date.now();
-        continue;
-      }
-      // Self-heal if the prompt never registered: an empty composer means the
-      // paste itself was dropped (TUI not accepting input yet) — re-paste; a
-      // non-empty composer means only the Enter was swallowed — re-press it.
-      // Bounded on purpose: an unbounded loop kept re-pasting the same prompt
-      // every 5s for the whole timeout window, burying Skald's pane under
-      // hundreds of identical lines whenever the real fault was downstream
-      // (a broken extractor, not a dropped keystroke). Three tries is enough
-      // to cover a genuinely swallowed paste; beyond that, fail loudly.
-      if (!state.matched && Date.now() - lastRetry > 5000) {
-        lastRetry = Date.now();
-        if (retries >= MAX_INJECT_RETRIES) {
-          throw new Error(
-            `Kimi TUI never registered the turn after ${MAX_INJECT_RETRIES} injection retries; `
-            + 'stopped re-pasting to avoid flooding the pane',
-          );
-        }
-        retries += 1;
-        // A queued paste is not a dropped paste: the text got in and is waiting
-        // its turn. Re-pasting here is what floods the pane, so only press
-        // Enter and let the queue drain.
-        if (this.tuiHasQueuedInput()) {
-          this.log(`TUI is busy with queued input; not re-pasting (${retries}/${MAX_INJECT_RETRIES})`);
-        } else if (this.composerIsEmpty()) {
-          // steer 提示只是 pane 启发式，可能滚没或被遮挡。turn 标记若在 pane
-          // 里（队列条目或历史回显），paste 就没丢，只是还没轮到——这时再
-          // inject() 一份，等于把同一批内容在他的上下文里复印一遍。
-          // （2026-08-31 三次重试风暴就是这样把他的 wire 灌到 6MB 的。）
-          if (this.turnMarkerInPane(state.needle)) {
-            this.log(`TUI turn marker already in pane; paste not dropped, only re-sending Enter (${retries}/${MAX_INJECT_RETRIES})`);
-          } else {
-            this.log(`TUI turn not registered and composer is empty; re-pasting (${retries}/${MAX_INJECT_RETRIES})`);
-            inject();
-            await sleep(800);
+
+      const state = { carry: '', needle: record.marker, matched: false, text: '', done: false, pendingApproval: null };
+      const decoder = new StringDecoder('utf8');
+      let offset = record.wireOffset;
+      let deadline = Date.now() + this.timeoutMs;
+      let lastRetry = Date.now(); let retries = 0;
+      try {
+        while (Date.now() < deadline) {
+          await sleep(500);
+          let stat;
+          try { stat = fs.statSync(record.wirePath); } catch { continue; }
+          if (stat.size < offset) throw pendingTurnError(record, 'wire shrank');
+          if (stat.size > offset) {
+            const fd = fs.openSync(record.wirePath, 'r');
+            try {
+              const buffer = Buffer.alloc(Math.min(64 * 1024, stat.size - offset));
+              while (offset < stat.size && !state.done) {
+                const read = fs.readSync(fd, buffer, 0, Math.min(buffer.length, stat.size - offset), offset);
+                if (read <= 0) break;
+                offset += read;
+                this.parseWireLines(decoder.write(buffer.subarray(0, read)), state);
+              }
+            } finally { fs.closeSync(fd); }
           }
-        } else {
-          this.log(`TUI turn not registered; re-sending Enter (${retries}/${MAX_INJECT_RETRIES})`);
+          if (state.done) {
+            record = this.captureCompletedTurn(record, state.text.trim());
+            this.lastTurnRecord = record;
+            return record.rawReply;
+          }
+          if (state.matched && record.state !== 'accepted') record = this.turnLedger.save(record, { state: 'accepted' });
+          if (!state.matched && await this.continueCacheExpiryHintIfPresent('submit')) { lastRetry = Date.now(); continue; }
+          if (state.pendingApproval) {
+            const request = state.pendingApproval; state.pendingApproval = null;
+            const waitedFrom = Date.now(); await this.resolveApproval(request);
+            deadline += Date.now() - waitedFrom; lastRetry = Date.now(); continue;
+          }
+          // Retry Enter only when this exact marker is visibly waiting in the
+          // composer. An absent wire event is never proof a paste was dropped.
+          if (!state.matched && Date.now() - lastRetry > 5000 && retries < MAX_ENTER_RETRIES) {
+            lastRetry = Date.now(); retries += 1;
+            const currentPane = this.capturePane();
+            if (!this.composerIsEmpty(currentPane) && currentPane.includes(record.marker)) {
+              this.tmux(['send-keys', '-t', this.tmuxSession, 'Enter']);
+            }
+          }
+          if (!this.tuiAlive()) throw pendingTurnError(record, 'TUI died before a matching turn.ended');
         }
-        this.tmux(['send-keys', '-t', this.tmuxSession, 'Enter']);
+        throw pendingTurnError(record, `observer timed out after ${Math.round(this.timeoutMs / 1000)}s`);
+      } catch (error) {
+        if (record.state !== 'completed') {
+          record = this.turnLedger.save(record, { state: 'outcome-unknown', lastError: String(error.message || error).slice(0, 500) });
+        }
+        if (error.code === 'KIMI_OUTCOME_UNKNOWN') throw error;
+        throw pendingTurnError(record, error.message || 'observer failure');
       }
-      if (!this.tuiAlive()) throw new Error('Kimi TUI died mid-turn');
-    }
-    throw new Error(`Kimi TUI turn timed out after ${Math.round(this.timeoutMs / 1000)}s`);
+    }, { turnRecord: record });
   }
 
   // /new: kimi only materialises a session by running a turn, so a fresh
@@ -876,6 +905,7 @@ export class KimiCliClient {
   // the session history on purpose — the agent should know how it began.
   async newThread() {
     const run = this.turnChain.then(async () => {
+      this.reconcilePendingTurns();
       const { code, stdout, stderr } = await this.runKimi(
         '（Telegram 桥 /new：新会话从这里开始。）',
         null,
@@ -905,6 +935,7 @@ export class KimiCliClient {
   async resumeThread(threadId) {
     const target = String(threadId || '').trim();
     if (!target) throw new Error('resumeThread needs a session id');
+    this.reconcilePendingTurns();
     const sessionsRoot = path.join(os.homedir(), '.kimi-code', 'sessions');
     let found = false;
     try {

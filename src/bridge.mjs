@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { deliverDurableNotice } from './durable-notice-outbox.mjs';
 
 // Telegram <-> Codex bridge.
 //
@@ -688,6 +689,7 @@ function makeCodexClient() {
       ...sharedOpts,
       model: config.model || '',
       kimiPath,
+      turnStateDir: path.join(stateDir, 'kimi-turns'),
       vision: config.vision || null,
       // The subscription K3 declares image_in and the CLI ships ReadMediaFile,
       // so the agent can open the archived original itself. Transcription stays
@@ -721,6 +723,20 @@ function makeCodexClient() {
 }
 
 const codex = checkOnly ? null : makeCodexClient();
+// Downtime may dissolve only dispatch groups proven not to have entered Kimi.
+// Unknown accepted turns stay attached to their original receipt/wire marker.
+durableInbox.groupModelLifecycle = (batch) => {
+  // Live queue closures still own their work; only crash-persisted dispatch
+  // groups without an in-process owner may be rebound by recovery.
+  if (batch.updateIds.some(id => inFlightUpdates.has(id))) return { state: 'scheduler-active' };
+  if (!(codex instanceof KimiCliClient) || codex.engine !== 'tui') return { state: 'unknown' };
+  try { codex.reconcilePendingTurns(); } catch (error) {
+    if (error.code !== 'KIMI_OUTCOME_UNKNOWN') return { state: 'unknown', error: String(error.message) };
+  }
+  const receipt = codex.turnLedger.read(`group:${batch.batchId}`);
+  if (!receipt) return { state: 'unsubmitted' };
+  return { ...receipt, receiptPath: codex.turnLedger.filePath(receipt.requestId) };
+};
 
 // ---------------------------------------------------------------------------
 // Telegram I/O
@@ -801,6 +817,30 @@ function appendLiveLog(event) {
 
 const DICE_EMOJI = ['🎲', '🎯', '🏀', '⚽', '🎳', '🎰'];
 
+function privateChunkDelivery(updateId) {
+  if (updateId == null) return null;
+  return {
+    isAcked: (index, text) => Boolean(durableInbox.privateChunkAck(updateId, index, text)),
+    ack: (index, text, result) => durableInbox.markPrivateChunkAck(updateId, index, text, result),
+  };
+}
+
+function groupChunkDelivery(batchId, replyIndex) {
+  return {
+    isAcked: (index, text) => Boolean(durableInbox.groupChunkAck(batchId, replyIndex, index, text)),
+    ack: (index, text, result) => durableInbox.markGroupChunkAck(batchId, replyIndex, index, text, result),
+  };
+}
+
+function groupStillAuthorized(chatId) {
+  refreshDynamicGroups();
+  return Boolean(groupConfigFor(chatId));
+}
+
+function mayDispatchUpdate(update) {
+  return typeof downtime.shouldDispatch !== 'function' || downtime.shouldDispatch(update);
+}
+
 async function sendMessage(chatId, text, replyToMessageId = null, options = {}) {
   const groupConfig = groupConfigFor(chatId);
   // Some groups read better without quote-replies (it keeps two bots from
@@ -809,11 +849,18 @@ async function sendMessage(chatId, text, replyToMessageId = null, options = {}) 
 
   // A reply that is exactly one dice emoji becomes a real Telegram dice roll.
   if (DICE_EMOJI.includes(String(text ?? '').trim())) {
-    const params = { chat_id: chatId, emoji: String(text).trim() };
+    const diceText = String(text).trim();
+    if (options.delivery?.isAcked(0, diceText)) return true;
+    const params = { chat_id: chatId, emoji: diceText };
     if (replyToMessageId) params.reply_parameters = { message_id: replyToMessageId };
     const result = await rateLimiter.run(
       chatId,
-      () => telegram('sendDice', params),
+      async () => {
+        if (options.shouldSend && !options.shouldSend()) return { skipped: true };
+        const sent = await telegram('sendDice', params);
+        options.delivery?.ack(0, diceText, sent);
+        return sent;
+      },
       { shouldSend: options.shouldSend },
     );
     return !result?.skipped;
@@ -821,13 +868,21 @@ async function sendMessage(chatId, text, replyToMessageId = null, options = {}) 
 
   const chunks = splitTelegramText(text, 4000, `(${config.botName} produced no sendable text.)`);
   for (const [index, chunk] of chunks.entries()) {
+    if (options.delivery?.isAcked(index, chunk)) continue;
     const params = { chat_id: chatId, text: chunk };
     if (index === 0 && replyToMessageId) {
       params.reply_parameters = { message_id: replyToMessageId };
     }
     const result = await rateLimiter.run(
       chatId,
-      () => telegram('sendMessage', params),
+      async () => {
+        if (options.shouldSend && !options.shouldSend()) return { skipped: true };
+        const sent = await telegram('sendMessage', params);
+        // Persist the known Telegram ACK before rate-limit state or live-log
+        // housekeeping can fail. Unknown network outcomes remain at-least-once.
+        options.delivery?.ack(index, chunk, sent);
+        return sent;
+      },
       { shouldSend: options.shouldSend },
     );
     if (result?.skipped) return false;
@@ -942,6 +997,11 @@ function buildPrivatePrompt(text, context, images = [], files = []) {
   ].join('\n');
 }
 
+function replyTargetIdsForBatch(batch) {
+  return [...new Set(batch.flatMap(message => message.downtimeContextOnly ? []
+    : message.replyTargetIds || [message.messageId]).map(Number))];
+}
+
 function buildGroupBatchPrompt(batch, {
   superseding,
   recentContextDelta = null,
@@ -959,7 +1019,8 @@ function buildGroupBatchPrompt(batch, {
     sender: message.senderName,
     username: message.senderUsername || null,
     senderIsBot: message.senderIsBot,
-    contextOnly: message.contextOnly === true,
+    contextOnly: message.downtimeContextOnly === true || message.contextOnly === true,
+    ...(message.albumSources ? { albumSources: message.albumSources, replyTargetIds: message.replyTargetIds || [] } : {}),
     replyTo: message.replyTo || null,
     text: message.text,
     images: (message.images || []).map((image) => ({
@@ -989,6 +1050,8 @@ function buildGroupBatchPrompt(batch, {
     chatId,
     chatTitle,
     profile: groupConfig.profile || null,
+    ...(batch.some(message => message.albumSources) ? { replyTargetIds: replyTargetIdsForBatch(batch),
+      triggerPolicy: 'Only replyTargetIds are reply triggers; contextOnly album sources provide the intact original media/caption, not independent old requests.' } : {}),
     superseding,
     imageCount,
     pendingContextImageCount: Number(pendingContextImageCount || 0),
@@ -1010,13 +1073,13 @@ function buildGroupBatchPrompt(batch, {
   ].join('\n');
 }
 
-async function askCodex(text, context, images = [], files = []) {
+async function askCodex(text, context, images = [], files = [], requestId = null) {
   const result = await codex.ask(
     buildPrivatePrompt(text, context, images, files),
     images,
-    { toolMode: telegramToolMode({ isGroup: false, privateToolsEnabled }) },
+    { toolMode: telegramToolMode({ isGroup: false, privateToolsEnabled }), ...(requestId ? { requestId } : {}) },
   );
-  sessionId = result.threadId;
+  sessionId = codex.threadId || result.threadId;
   syncThreadToDesktop(
     result.threadId,
     `[private] ${context.senderName || context.senderUsername || '?'}: ${String(text).slice(0, 100)}`,
@@ -1045,6 +1108,8 @@ function serializeDurableGroupMessage(message) {
     receivedAt: Number(message.receivedAt || Date.now()),
     _durableUpdateId: Number(message._durableUpdateId),
     _pendingGroupImageTokens: [...(message._pendingGroupImageTokens || [])],
+    ...(message.downtimeContextOnly ? { downtimeContextOnly: true, contextOnly: true } : {}),
+    ...(message.albumSources ? { albumSources: structuredClone(message.albumSources), replyTargetIds: [...(message.replyTargetIds || [])] } : {}),
   };
 }
 
@@ -1061,7 +1126,10 @@ function durableBatchIdFromMessages(batch) {
 
 async function generateGroupReplies(batch, options) {
   const chatId = batch.at(-1).chatId;
-  const updateIds = batch.map((message) => Number(message._durableUpdateId));
+  const updateIds = [...new Set(batch.flatMap((message) => {
+    const id = Number(message._durableUpdateId);
+    return durableInbox.albumForUpdate(id)?.updateIds || [id];
+  }))];
   if (!updateIds.length || updateIds.some((updateId) => !Number.isSafeInteger(updateId))) {
     throw new Error(`group batch is missing durable update ids chat=${chatId}`);
   }
@@ -1078,9 +1146,15 @@ async function generateGroupReplies(batch, options) {
       chatId,
       updateIds,
       preparedMessages: batch.map(serializeDurableGroupMessage),
+      modelLifecycleVersion: 1,
     });
   }
   for (const message of batch) message._durableGroupBatchId = durableBatchId;
+  const revokedResult = () => {
+    for (const message of batch) message._authorizationRevoked = true;
+    return [];
+  };
+  if (!groupStillAuthorized(chatId)) return revokedResult();
 
   const typing = setInterval(() => {
     telegram('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {});
@@ -1104,7 +1178,7 @@ async function generateGroupReplies(batch, options) {
       currentBatchMessageIds,
     );
     const result = await modelQueue.run(
-      () => codex.ask(buildGroupBatchPrompt(batch, {
+      () => groupStillAuthorized(chatId) ? codex.ask(buildGroupBatchPrompt(batch, {
         ...options,
         recentContextDelta,
         pendingContextImageCount: pending.images.length,
@@ -1114,26 +1188,28 @@ async function generateGroupReplies(batch, options) {
         // so communication remains available while local mutation is denied.
         toolMode: telegramToolMode({ isGroup: true, privateToolsEnabled }),
         outputSchema: GROUP_REPLY_SCHEMA,
+        requestId: `group:${durableBatchId}`,
         // Silence is a valid group outcome (mention-only): an empty turn must
         // settle as "no replies", not as a failure that retries the same batch
         // until it dead-letters and pages Synqa.
         allowEmpty: true,
-      }),
+      }) : { authorizationRevoked: true },
       0,
     );
     // Pin the exact thread that generated this batch: an explicit /new or
     // /resume can land between generation and the Telegram send.
+    if (result.authorizationRevoked) return revokedResult();
     for (const message of batch) {
       message._processedThreadId = result.threadId;
       message._pendingGroupImageTokens = pending.tokens;
     }
-    sessionId = result.threadId;
+    sessionId = codex.threadId || result.threadId;
     const lastMessage = batch.at(-1);
     syncThreadToDesktop(
       result.threadId,
       `[${lastMessage?.chatTitle || chatId}] ${lastMessage?.senderName || '?'}: ${String(lastMessage?.text || '').slice(0, 100)}`,
     );
-    const replies = parseBatchReplies(result.reply, batch.map((message) => message.messageId));
+    const replies = parseBatchReplies(result.reply, replyTargetIdsForBatch(batch));
     durableInbox.markGroupBatchReplies(durableBatchId, replies, result.threadId);
     return replies;
   } finally {
@@ -1162,21 +1238,26 @@ const groupBatcher = new GroupConversationBatcher({
       log(`group reply already acked, not resending batch=${durableBatchId} reply=${replyIndex}`);
       return true;
     }
-    const fallbackMessageId = [...batch].reverse().find((message) => !message.senderIsBot)?.messageId
-      || batch.at(-1)?.messageId
-      || null;
+    const validTargets = new Set(replyTargetIdsForBatch(batch));
+    const fallbackMessageId = [...batch].reverse().find((message) => !message.senderIsBot && validTargets.has(Number(message.messageId)))?.messageId
+      || [...validTargets].at(-1) || null;
     const sent = await sendMessage(
       chatId,
       reply.text,
       reply.replyToMessageId || fallbackMessageId,
-      { shouldSend },
+      { shouldSend: () => groupStillAuthorized(chatId) && shouldSend(),
+        delivery: groupChunkDelivery(durableBatchId, replyIndex) },
     );
     if (sent) durableInbox.markGroupReplyAck(durableBatchId, replyIndex);
     return sent;
   },
-  onReact: reactToMessage,
+  onReact: (chatId, messageId, emoji) => groupStillAuthorized(chatId) ? reactToMessage(chatId, messageId, emoji) : undefined,
   notifyFailure: notifyGroupFailure,
   onBatchComplete: async (chatId, batch) => {
+    if (batch.some((message) => message._authorizationRevoked)) {
+      durableInbox.markGroupBatchDone(durableBatchIdFromMessages(batch), 'group-authorization-revoked');
+      return;
+    }
     const processedThreadIds = [...new Set(batch.map((message) => message._processedThreadId).filter(Boolean))];
     if (processedThreadIds.length !== 1) {
       throw new Error(`group batch thread ownership ambiguous chat=${chatId}`);
@@ -1591,7 +1672,7 @@ async function sendDurablePrivateText(
   if (rawTelegram) {
     sendResult = await telegram('sendMessage', { chat_id: chatId, text: delivery.reply });
   } else {
-    await sendMessage(chatId, delivery.reply);
+    await sendMessage(chatId, delivery.reply, null, { delivery: privateChunkDelivery(durableUpdateId) });
   }
   durableInbox.markPrivateSendAck(durableUpdateId, sendResult);
   return sendResult;
@@ -1916,9 +1997,9 @@ async function processPrivateMessage(message, text, context, images = [], files 
         inbox: durableInbox,
         updateId: durableUpdateId,
         chatId,
-        generate: () => modelQueue.run(() => askCodex(text, context, images, files), 10),
+        generate: () => modelQueue.run(() => askCodex(text, context, images, files, `private:${durableUpdateId}`), 10),
         send: async (reply) => {
-          await sendMessage(chatId, reply);
+          await sendMessage(chatId, reply, null, { delivery: privateChunkDelivery(durableUpdateId) });
           return null;
         },
         onReplay: (delivery) => {
@@ -1960,26 +2041,24 @@ async function handleMessage(message, durableUpdateId = null, albumMessages = []
   let shouldRememberCurrentGroupMessage = false;
 
   const capturePassiveGroupImages = async () => {
-    const hasPhoto = Array.isArray(message.photo) && message.photo.length > 0;
-    const hasImageDocument = String(message.document?.mime_type || '').toLowerCase().startsWith('image/');
-    if (!hasPhoto && !hasImageDocument) return;
-    const { images } = await downloadTelegramAttachments(message, {
-      token,
-      imageCacheDir,
-      fileCacheDir,
-      log,
-      maxImageBytes: Number(config.imageMaxBytes || DEFAULT_CONFIG.imageMaxBytes),
-      maxFileBytes: Number(config.fileMaxBytes || DEFAULT_CONFIG.fileMaxBytes),
-      maxPreviewChars: Number(config.attachmentTextMaxChars || DEFAULT_CONFIG.attachmentTextMaxChars),
-    });
-    const tokens = pendingGroupImages.record({
-      chatId,
-      messageId: message.message_id,
-      updateId: durableUpdateId,
-      sentAt: new Date(sentAt).toISOString(),
-      images,
-    });
-    if (tokens.length) log(`quiet group image queued chat=${chatId} message=${message.message_id} images=${tokens.length}`);
+    for (const source of [message, ...albumMessages]) {
+      const hasPhoto = Array.isArray(source.photo) && source.photo.length > 0;
+      const hasImageDocument = String(source.document?.mime_type || '').toLowerCase().startsWith('image/');
+      if (!hasPhoto && !hasImageDocument) continue;
+      const { images } = await downloadTelegramAttachments(source, {
+        token, imageCacheDir, fileCacheDir, log,
+        maxImageBytes: Number(config.imageMaxBytes || DEFAULT_CONFIG.imageMaxBytes),
+        maxFileBytes: Number(config.fileMaxBytes || DEFAULT_CONFIG.fileMaxBytes),
+        maxPreviewChars: Number(config.attachmentTextMaxChars || DEFAULT_CONFIG.attachmentTextMaxChars),
+      });
+      const sourceUpdate = source === message ? durableUpdateId
+        : durableInbox.albumForUpdate(durableUpdateId)?.updates.find((u) => u.message?.message_id === source.message_id)?.update_id;
+      const tokens = pendingGroupImages.record({
+        chatId, messageId: source.message_id, updateId: sourceUpdate ?? null,
+        sentAt: new Date(Number(source.date || 0) * 1000 || sentAt).toISOString(), images,
+      });
+      if (tokens.length) log(`quiet group image queued chat=${chatId} message=${source.message_id} images=${tokens.length}`);
+    }
   };
 
   if (isPrivate) {
@@ -2253,8 +2332,9 @@ async function prepareTelegramUpdate(update, albumMessages = []) {
   return {};
 }
 
-function updateRetryOptions() {
+function updateRetryOptions(error = null) {
   return {
+    countAttempt: error?.retryWithoutAttempt !== true,
     maxAttempts: Math.max(1, Number(config.updateMaxAttempts || DEFAULT_CONFIG.updateMaxAttempts)),
     baseDelayMs: Math.max(250, Number(config.updateRetryBaseMs || DEFAULT_CONFIG.updateRetryBaseMs)),
     maxDelayMs: Math.max(1000, Number(config.updateRetryMaxMs || DEFAULT_CONFIG.updateRetryMaxMs)),
@@ -2272,8 +2352,8 @@ function recordUpdateFailure(update, error, phase) {
   let retry;
   try {
     retry = groupBatch
-      ? durableInbox.markGroupBatchRetry(groupBatch.batchId, errorText, updateRetryOptions())
-      : durableInbox.markRetry(updateId, errorText, updateRetryOptions());
+      ? durableInbox.markGroupBatchRetry(groupBatch.batchId, errorText, updateRetryOptions(error))
+      : durableInbox.markRetry(updateId, errorText, updateRetryOptions(error));
   } catch (journalError) {
     log(`update ${updateId} failed during ${phase}, and the retry state could not be written: ${journalError.message}`);
     return;
@@ -2315,6 +2395,16 @@ function recordUpdateFailure(update, error, phase) {
 }
 
 async function replayDurableGroupBatch(record) {
+  if (!record.updateIds.every((id) => {
+    const update = durableInbox.rawUpdate(id);
+    return !update || mayDispatchUpdate(update);
+  })) return false;
+  if (!groupStillAuthorized(record.chatId)) {
+    durableInbox.markGroupBatchDone(record.batchId, 'group-authorization-revoked');
+    log(`group replay retained as terminal without model/send: authorization revoked batch=${record.batchId}`);
+    return true;
+  }
+
   const batch = record.preparedMessages.map((message) => ({
     ...message,
     _durableGroupBatchId: record.batchId,
@@ -2333,6 +2423,10 @@ async function replayDurableGroupBatch(record) {
   let threadId = record.threadId;
   if (replies == null) {
     replies = await generateGroupReplies(batch, { superseding: false, replayBatchId: record.batchId });
+    if (batch.some((message) => message._authorizationRevoked)) {
+      durableInbox.markGroupBatchDone(record.batchId, 'group-authorization-revoked');
+      return true;
+    }
     const refreshed = durableInbox.groupBatchForUpdate(record.updateIds[0]);
     threadId = refreshed?.threadId || batch[0]?._processedThreadId || null;
   } else {
@@ -2345,14 +2439,14 @@ async function replayDurableGroupBatch(record) {
       log(`crash replay skipping an acked reply batch=${record.batchId} reply=${replyIndex}`);
       continue;
     }
-    const fallbackMessageId = [...batch].reverse().find((message) => !message.senderIsBot)?.messageId
-      || batch.at(-1)?.messageId
-      || null;
+    const validTargets = new Set(replyTargetIdsForBatch(batch));
+    const fallbackMessageId = [...batch].reverse().find((message) => !message.senderIsBot && validTargets.has(Number(message.messageId)))?.messageId
+      || [...validTargets].at(-1) || null;
     const sent = await sendMessage(
       chatId,
       reply.text,
       reply.replyToMessageId || fallbackMessageId,
-      { shouldSend: () => true },
+      { shouldSend: () => groupStillAuthorized(chatId), delivery: groupChunkDelivery(record.batchId, replyIndex) },
     );
     if (!sent) throw new Error(`crash replay send skipped batch=${record.batchId} reply=${replyIndex}`);
     durableInbox.markGroupReplyAck(record.batchId, replyIndex);
@@ -2368,7 +2462,7 @@ function recordGroupBatchReplayFailure(record, error) {
   const errorText = redactSensitiveText(error?.message || String(error || 'unknown'));
   let retry;
   try {
-    retry = durableInbox.markGroupBatchRetry(record.batchId, errorText, updateRetryOptions());
+    retry = durableInbox.markGroupBatchRetry(record.batchId, errorText, updateRetryOptions(error));
   } catch (journalError) {
     log(`group batch ${record.batchId} replay failed, and the retry state could not be written: ${journalError.message}`);
     return;
@@ -2393,7 +2487,7 @@ function recordGroupBatchReplayFailure(record, error) {
 }
 
 async function replayPendingDurableGroupBatches() {
-  for (const record of durableInbox.pendingGroupBatches()) {
+  for (const record of durableInbox.pendingGroupBatches(Date.now(), { shouldDispatch: mayDispatchUpdate })) {
     // A live in-process batcher run owns these promises. Exact replay is only
     // for crash/retry recovery, never a second concurrent sender while the
     // original generation or delivery is still running.
@@ -2433,9 +2527,15 @@ async function runDurableDispatch() {
   // 记录留在 received，恢复后按规则分类（外群弃读 / 超 6h 进 digest / 私聊逐条）。
   if (!downtime.gateOpen()) return;
   downtime.consumeResume();
+  await downtime.flushCatchupNotices({
+    send: (text, { noticeId, ownerId, isCurrent }) => deliverDurableNotice({
+      directory: path.join(stateDir, 'catchup-notice-outbox'), noticeId, ownerId, text, isCurrent,
+      send: (chatId, body, options) => sendMessage(chatId, body, null, options),
+    }),
+  });
   await replayPendingDurableGroupBatches();
   const maxInFlight = Math.max(1, Number(config.updateMaxInFlight || DEFAULT_CONFIG.updateMaxInFlight));
-  const pendingSnapshot = [...durableInbox.pendingUpdates()];
+  const pendingSnapshot = durableInbox.pendingUpdates(Date.now(), { shouldDispatch: mayDispatchUpdate }).filter(mayDispatchUpdate);
   for (const update of pendingSnapshot) {
     const updateId = Number(update.update_id);
     if (inFlightUpdates.has(updateId)) continue;
@@ -2444,23 +2544,30 @@ async function runDurableDispatch() {
     // 相册聚合：每条 update 仍独立落盘，合并只发生在这里；窗口没到就跳过本轮，
     // 挂定时器到点再来，不 sleep 在收消息那条路上。
     let albumMessages = [];
-    let albumSiblingIds = [];
-    let albumId = null;
     let albumBatchKey = null;
     if (albumBatcher) {
-      const plan = albumBatcher.plan(update, pendingSnapshot);
-      if (plan.action === 'wait') { scheduleAlbumFlush(plan.waitMs); continue; }
-      if (plan.action === 'merge') {
-        const [main, ...rest] = plan.updates;
-        // 整批只由最小 update_id 负责，其余随它一起 markDone。
-        if (Number(main.update_id) !== updateId) continue;
-        albumMessages = rest.map((sibling) => sibling.message).filter(Boolean);
-        albumSiblingIds = rest.map((sibling) => Number(sibling.update_id));
-        albumId = plan.albumId;
-        albumBatchKey = plan.batchKey;
-        if (albumMessages.length) {
-          log(`album merged chat=${update.message?.chat?.id} items=${albumMessages.length + 1}`);
+      try {
+        const existing = durableInbox.albumForUpdate(updateId);
+        let membership = existing;
+        if (!membership) {
+          const plan = albumBatcher.plan(update, pendingSnapshot);
+          if (plan.action === 'wait') { scheduleAlbumFlush(plan.waitMs); continue; }
+          if (plan.action === 'merge') {
+            if (Number(plan.updates[0].update_id) !== updateId) continue;
+            membership = durableInbox.markAlbumBatch(plan.updates);
+            albumBatchKey = plan.batchKey;
+          }
         }
+        if (membership) {
+          if (membership.primaryUpdateId !== updateId) continue;
+          const [, ...rest] = membership.updates;
+          albumMessages = rest.map((sibling) => sibling.message).filter(Boolean);
+          albumBatchKey ||= membership.albumKey;
+          if (albumMessages.length) log(`album merged chat=${update.message?.chat?.id} items=${albumMessages.length + 1}`);
+        }
+      } catch (error) {
+        recordUpdateFailure(update, error, 'album-membership');
+        break;
       }
     }
 
@@ -2480,7 +2587,7 @@ async function runDurableDispatch() {
     const tracked = completion
       .then(() => {
         durableInbox.markDone(updateId);
-        for (const siblingId of albumSiblingIds) durableInbox.markDone(siblingId);
+        // markDone commits frozen album/group membership in one journal event.
         if (albumBatchKey) albumBatcher?.forget(albumBatchKey);
       })
       .catch((error) => {
@@ -2638,7 +2745,7 @@ async function poll() {
   // reload the old TUI can disappear during Telegram connection startup,
   // leaving launchd healthy but `Skald` with nothing to attach to. Re-check
   // the visible TUI at the end of startup and wait until it is attachable.
-  if (codexMode === 'kimi' && config.kimiEngine === 'tui' && sessionId) {
+  if (codexMode === 'kimi' && config.kimiEngine === 'tui' && sessionId && codex.turnLedger.pending().length === 0) {
     await codex.ensureTui(sessionId);
   }
   log(

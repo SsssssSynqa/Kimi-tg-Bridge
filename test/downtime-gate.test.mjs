@@ -8,6 +8,7 @@ import { DurableUpdateInbox } from '../src/durable-update-inbox.mjs';
 import { createDowntimeHooks, handleCatchupCommand } from '../src/downtime-hooks.mjs';
 import { PAUSE_FILE, RESUME_FILE, OBSERVED_FILE, GATE_DISPOSITION } from '../../../shared/downtime-gate.mjs';
 import { remainingFromPercent } from '../../../shared/downtime-bridge-hooks.mjs';
+import { buildDigest, writeDigestFiles, loadScope } from '../../../shared/downtime-digest.mjs';
 
 const HOME = -1004499561917;      // 光脉
 const HEART = -1004412303598;     // 💔（家群）
@@ -29,10 +30,12 @@ function fixture(t) {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const stateDir = path.join(dir, '.state');
   fs.mkdirSync(stateDir, { recursive: true });
+  fs.mkdirSync(path.join(dir, 'shared'));
+  fs.writeFileSync(path.join(dir, 'shared/downtime-catchup-scope.json'), JSON.stringify(loadScope()));
   fs.writeFileSync(path.join(stateDir, 'offset.txt'), '4242');
   const inbox = new DurableUpdateInbox(path.join(stateDir, 'journal.jsonl'), { compactBytes: 1 << 20 });
   const logs = [];
-  const downtime = createDowntimeHooks({ durableInbox: inbox, log: m => logs.push(m), stateDir });
+  const downtime = createDowntimeHooks({ durableInbox: inbox, log: m => logs.push(m), stateDir, root: dir });
   return { dir, stateDir, controlDir: path.join(stateDir, 'control'), inbox, downtime, logs };
 }
 
@@ -72,6 +75,10 @@ test('恢复 > 6h：外群弃读、家群（含 💔）进 digest、私聊照常
     recordId: 'dt-20260906-skald', mode: 'digest', digestId: 'skald-20260906T2200-20260907T0500',
     window: { start: '2026-09-06T22:00+08:00', end: '2026-09-07T05:00+08:00' },
   }));
+  writeDigestFiles(buildDigest({ updates: f.inbox.pendingDowntimeUpdates(),
+    window: { start: '2026-09-06T22:00+08:00', end: '2026-09-07T05:00+08:00' },
+    scope: loadScope(), bridge: 'skald', persona: 'skald',
+  }), path.join(f.dir, 'downtime-digests'));
   const stats = f.downtime.consumeResume({ now: Date.parse('2026-09-07T05:00+08:00') });
   assert.deepEqual([stats.external, stats.digested, stats.replay], [1, 2, 1], JSON.stringify(stats));
   assert.equal(f.inbox.updateState(4), 'received', '私聊逐条恢复');
@@ -97,15 +104,14 @@ test('/catchup：跨桥的包不给读；水位紧张时分片', async (t) => {
   const dir = path.join(f.dir, 'downtime-digests');
   fs.mkdirSync(dir);
   const write = (id, bridge) => {
-    const body = Array.from({ length: 400 }, (_, i) => `09-06 23:${String(i % 60).padStart(2, '0')}  ★鹅鹅：第 ${i} 句`).join('\n');
-    fs.writeFileSync(path.join(dir, `${id}.txt`), body + '\n');
-    fs.writeFileSync(path.join(dir, `${id}.manifest.json`), JSON.stringify({
-      digestId: id, bridge, persona: bridge, status: 'unread',
-      window: { start: 'a', end: 'b', startCst: 'a', endCst: 'b', durationLabel: '7 小时' },
-      digestItemCount: 400, ownerMessages: 150, codePoints: body.length,
-      estimatedTokens: Math.ceil(body.length / 1.33), readHistory: [],
-    }));
-    return body;
+    const built = buildDigest({
+      updates: Array.from({ length: 400 }, (_, i) => update(i + 100, HOME, '2026-09-06T23:00+08:00', `第 ${i} 句 ${'完整保留正文'.repeat(10)}`)),
+      window: { start: '2026-09-06T22:00+08:00', end: '2026-09-07T05:00+08:00' },
+      scope: loadScope(), bridge, persona: bridge,
+    });
+    assert.equal(built.digestId, id);
+    writeDigestFiles(built, dir);
+    return built.text;
   };
   const mine = 'skald-20260906T2200-20260907T0500';
   const his = 'sephy-20260906T2200-20260907T0500';

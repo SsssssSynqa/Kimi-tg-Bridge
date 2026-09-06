@@ -34,6 +34,14 @@ canonical-home: Kimi/skald-tg-bridge
 - `created-at` 立项日取自旧文最早日期；`updated-at` 为迁移时刻。
 - **待 Owner 做的事**：把 `state`/`phase` 改成真实状态、按 §4.7 拆分台账、补证据与验收边界。
 
+## 2026-09-07 隔离修复候选（不冒认生产加载）
+
+| 工作项 | 施工人 | 审核人 | 状态 | 证据 | 剩余工作 | 验收边界 | 最近更新 |
+|---|---|---|---|---|---|---|---|
+| SK-01/02 生命周期/只读 guard；SK-04 stop；SK-06 JSONL；SK-08 chunk ACK；SK-10 全相册；SK-11 撤群重放；SY-02 相册原子成员 | Sephy / Skald 分桥施工 | 主审待独立核验 | code complete / awaiting acceptance，仅隔离副本 | `tasks/tg-three-bridge-audit-20260907/repairs/skald/core-final.log` 40/40；`syntax-check.log` exit 0；修复说明 `REPAIR.md` | 主审 diff、正式源码合入；completed mixed 原目标不明的个案需明确处置 | 未部署、未重启、未改会话/配置/队列；原文历史运行证据不代表本批加载 | 2026-09-07 |
+
+最终全套 `full-suite-final.log` 为 **187/187 PASS**；之后追加启动 no-auto-start 窄修，由 `lifecycle-final.log` 单独验证最终代码。首轮 171 项 / 163 通过 / 8 失败已保留，缺跨树依赖及旧 digest 假夹具已修，不隐藏失败。新增补读通知、全批恢复与跨窗相册触发/上下文分离已在隔离副本完成。**completed mixed 原回复只能关联窗口内目标的个案仍需明确人工处置，不冒认自动恢复**。原先缺口反例保留在 `tasks/tg-three-bridge-audit-20260907/skald/evidence/`；测试绿不代签自然消息验收。
+
 ## 原文（迁移前 `PROJECT_STATUS.md` 全文，一字未改）
 # Skald Telegram Bridge · PROJECT_STATUS
 
