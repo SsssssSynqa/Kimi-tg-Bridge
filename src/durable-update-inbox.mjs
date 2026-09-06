@@ -399,6 +399,27 @@ export class DurableUpdateInbox {
     return this.records.get(Number(updateId))?.state || null;
   }
 
+  // 停机协议（Plan v3.2）：把一条停机期间攒下的记录标成终态，并写明它为什么终结。
+  // journal 里 done 事件多带的字段在 replay 时被忽略（load 只取 updateId），纯属审计信息，
+  // 不改变既有状态机；terminalReason 让「人格处理过」与「按规则弃读/进 digest」不再混为一谈。
+  markDowntimeDone(updateId, terminalReason, context = {}) {
+    const id = Number(updateId);
+    const record = this.records.get(id);
+    if (!record || record.state === 'done') return false;
+    if (this.groupBatchForUpdate(id)?.state === 'active') return false;
+    if (!terminalReason) throw new Error('markDowntimeDone 必须给出 terminalReason');
+    this.append({
+      state: 'done', updateId: id, recordedAt: new Date().toISOString(),
+      terminalReason: String(terminalReason),
+      downtimeRecordId: context.recordId ? String(context.recordId) : null,
+      digestId: context.digestId ? String(context.digestId) : null,
+    });
+    this.markDoneInMemory(id);
+    this.trimDoneIndex();
+    this.compactIfNeeded();
+    return true;
+  }
+
   markDone(updateId) {
     const id = Number(updateId);
     if (this.records.get(id)?.state === 'done') return;

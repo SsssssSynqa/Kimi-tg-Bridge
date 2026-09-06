@@ -26,6 +26,7 @@ import { CodexDaemonClient } from './codex-daemon-client.mjs';
 import { KimiCliClient } from './kimi-client.mjs';
 import { syncDesktopMetadata } from './desktop-sync.mjs';
 import { deliverDurablePrivateReply, DurableUpdateInbox } from './durable-update-inbox.mjs';
+import { createDowntimeHooks, handleCatchupCommand } from './downtime-hooks.mjs';
 import { handleGateCommand, normalizeGatePrefix, readDynamicGroups } from './gate-command.mjs';
 import { canTriggerInGroup } from './group-membership.mjs';
 import { buildTelegramReplyContext } from './telegram-reply-context.mjs';
@@ -384,6 +385,9 @@ const durableInbox = new DurableUpdateInbox(updateInboxPath, {
   compactBytes: Number(config.updateJournalCompactBytes || DEFAULT_CONFIG.updateJournalCompactBytes),
   rawArchivePath: updateRawArchivePath,
 });
+
+// 停机协议闸门（Plan v3.2 步骤 5/6）：停机期间只挡「进模型」，收件与落盘照常。
+const downtime = createDowntimeHooks({ durableInbox, log, stateDir });
 const pendingGroupImages = new PendingGroupImages({
   filePath: pendingGroupImagesPath,
   imageRoot: imageCacheDir,
@@ -1620,6 +1624,39 @@ async function processPrivateMessage(message, text, context, images = [], files 
     return;
   }
 
+  if (/^\/catchup(?:@\w+)?(?:\s|$)/i.test(text)) {
+    // 崩溃安全：整条 /catchup 是一次 durable operation。看到「有 intent 没 result」= 上次喂到一半崩了，
+    // 绝不自动重喂整包（Plan P0 ①：一旦 outcome-unknown 只能查证或人工决策）。
+    const priorOperation = durableUpdateId == null ? null : durableInbox.operation(durableUpdateId);
+    if (priorOperation?.status === 'result') {
+      await sendDurablePrivateText(durableUpdateId, chatId, String(priorOperation.result.reply || '已处理'));
+      return;
+    }
+    if (priorOperation?.status === 'intent') {
+      await sendMessage(chatId, '⚠️ 上一次 /catchup 送到一半没确认完，为免把整包重新塞进会话，这次不自动重放。确认要重读请发 /catchup <digest-id> --again。');
+      durableInbox.completeOperation(durableUpdateId, { reply: 'catchup 中断，未自动重放' });
+      return;
+    }
+    if (durableUpdateId != null) durableInbox.beginOperation(durableUpdateId, 'catchup', { text });
+    const reading = currentContextReading();
+    let summary = '已处理 /catchup';
+    await handleCatchupCommand({
+      text,
+      isOwner: String(message.from.id) === ownerUserId,
+      contextPercent: reading?.percent ?? null,
+      contextCapacityTokens: Number(config.contextCapacityTokens || 1_000_000),
+      log,
+      send: async (reply) => { summary = reply; await sendMessage(chatId, reply); },
+      deliver: async (prompt, part) => {
+        summary = `已送入补读 ${part.digestId}（${part.index}/${part.of}）`;
+        const generated = await modelQueue.run(() => askCodex(prompt, { source: 'downtime-catchup', digestId: part.digestId }));
+        await sendMessage(chatId, generated.reply);
+      },
+    });
+    if (durableUpdateId != null) durableInbox.completeOperation(durableUpdateId, { reply: summary });
+    return;
+  }
+
   if (/^\/session$/i.test(text)) {
     await sendMessage(chatId, `Current Codex thread: ${sessionId || 'not created yet'}`);
     return;
@@ -2392,6 +2429,10 @@ function scheduleAlbumFlush(waitMs) {
 }
 
 async function runDurableDispatch() {
+  // 停机闸门：暂停期间一条都不进模型。poller 仍在收件、仍在落盘、仍在推进 offset，
+  // 记录留在 received，恢复后按规则分类（外群弃读 / 超 6h 进 digest / 私聊逐条）。
+  if (!downtime.gateOpen()) return;
+  downtime.consumeResume();
   await replayPendingDurableGroupBatches();
   const maxInFlight = Math.max(1, Number(config.updateMaxInFlight || DEFAULT_CONFIG.updateMaxInFlight));
   const pendingSnapshot = [...durableInbox.pendingUpdates()];
