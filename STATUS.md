@@ -71,3 +71,17 @@ canonical-home: Kimi/skald-tg-bridge
 - 当前 journal 为 1259 done、0 pending、0 delayed、0 dead；历史终态处置未 replay。
 - shared monitor runtime shell 为 `ok`，但 output probe 仍未配置；进程、socket 与 backlog 不代签当前真人回复。
 - 当前 session 与更早 19MB 历史备份的归属疑点仍是历史连续性调查项；本轮没有用新 session 掩盖它。
+
+## 2026-09-12 09:4x（东八区）鸦鸦卡住两小时的回合 · 现场处置（Sylux）
+
+- 现象：家群 `-1004499561917` 07:27 那批（update 261200518，marker `[turn:t64c30ec9d6194c64ae0a9608218df86b]`）粘进了 TUI 输入框，但 Enter 没提交；桥每 10 分钟 replay 一次，日志连刷 `outcome-unknown (observer timed out after 600s)`（今天 14 次；09-09 起零星出现）。Kimi 自己的日志每分钟照常写 session index reconciliation，TUI 没死。
+- 处置：09:43 先补一次 `Enter` 无效；09:44 `Escape` 再 `Enter`，wire 立刻增长（5705190 → 5708928）、输入框清空、TUI 开始生成；桥随即记 `Kimi cache-expiry hint detected (submit); selecting Continue as-is`，ledger 从 outcome-unknown → accepted。**没有重新粘贴、没有换 session、没有重启任何进程。**
+- 病因假设（未证实，待 owner 复核）：TUI 上有一个**不可见的弹层**挡住了 Enter（Escape 一按就通），而桥的 `cacheExpiryHintIsOpen()` 认不出 0.42.0 的这一种；同时 `MAX_ENTER_RETRIES` 那条补 Enter 的守卫要求 `currentPane.includes(record.marker)`，长提示把 marker 卷出了输入框可见区（显示「↑ 8 more」），补 Enter 永远不触发。两处都在 `src/kimi-client.mjs`（~575 / ~886）。
+- ⚠️ 同日 Sylux 在 LA 测 Kimi Linux 版时轮换了 OAuth（详见 `tasks/sylux-skald-vps-migration-20260912/PLAN.md` Phase 0），已把新凭据放回 Mac（旧的备份 `~/.kimi-code/credentials/kimi-code.json.bak-pre-la-test-20260912`）；这一步在 09:40，晚于 07:27 的卡住，不是本次卡住的原因。
+
+## 2026-09-13 01:5x（东八区）粘贴后回车被吃 · 已修并部署 LA（Sylux）
+
+- 现象再现：鸦鸦切到 LA 后 01:07 第一批（含图片附件路径）粘进输入框、回车没提交，同 09-12 07:27 Mac 那次；01:44 人工 Escape+Enter 后提交，随后 01:43/01:45 两批自行完成（不是每批都卡，含文件路径的粘贴最容易触发提示层）。
+- 修复 `c5086df`：`src/kimi-client.mjs` 粘贴后 Escape→Enter；补 Enter 守卫改为「marker 可见 **或** 输入框显示 ↑ N more」；`test/tui-turn.test.mjs` 只数 Enter。tui-turn 14/14、repair-lifecycle+group-batcher 26/26。
+- 部署：LA `src/kimi-client.mjs` sha 18707fc4 与 Mac 一致；01:51:26 只重启桥（KillMode=process，TUI 331869 原样存活，同一 session）。
+- 切换全过程（00:28 切、00:33～01:07 掉线、01:07 修好）见 `tasks/sylux-skald-vps-migration-20260912/PLAN.md` §7。
