@@ -1,0 +1,71 @@
+{
+  "botName": "Skald",
+  "ownerName": "Synqa",
+  "allowedUserIds": [
+    "8668822281"
+  ],
+  "ownerUserId": "8668822281",
+  "mentionPatterns": [
+    "skald",
+    "斯卡尔德",
+    "鸦鸦",
+    "鹅",
+    "大猫猫",
+    "蛇",
+    "kimi",
+    "sylux",
+    "syner",
+    "sephy"
+  ],
+  "gateCommandPrefix": "skald",
+  "allowedGroups": {
+    "-1004293208887": {
+      "title": "Synergia",
+      "requireMention": true,
+      "allowAllBotUsers": true,
+      "allowUnaddressedBotMessages": true,
+      "maxConsecutiveBotMessages": 2,
+      "mentionContext": {
+        "enabled": true,
+        "messageCount": 15,
+        "maxStoredMessages": 50,
+        "maxMessageChars": 800,
+        "recordAllDeliveredMessages": true
+      },
+      "privateToolsEnabled": false
+    }
+  },
+  "codexMode": "kimi",
+  "kimiEngine": "tui",
+  "liveLogEnabled": true,
+  "kimiPath": "/srv/skald/.kimi-code/bin/kimi",
+  "imageCacheDir": "/srv/synergia/Kimi/attachments/images",
+  "fileCacheDir": "/srv/synergia/Kimi/attachments/files",
+  "vision": {
+    "model": "qwen3-vl-flash",
+    "baseUrl": "https://ws-wr4iauxq3g276vb7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "apiKeyFile": "/etc/skald/vision.env",
+    "apiKeyVar": "BAILIAN_API_KEY",
+    "timeoutMs": 90000
+  },
+  "workdir": "/srv/synergia/Kimi",
+  "model": "",
+  "privateToolsEnabled": true,
+  "toolWritableRoots": [
+    "/srv/synergia/Kimi"
+  ],
+  "toolNetworkAccess": false,
+  "keychainService": "com.synergia.skald-telegram-bot",
+  "keychainAccount": "bot-token",
+  "timeoutMs": 600000,
+  "desktopSync": false,
+  "groupQueueMaxPerChat": 100,
+  "privateQueueMax": 50,
+  "updateMaxInFlight": 100,
+  "updateJournalCompactBytes": 8388608,
+  "updateMaxAttempts": 12,
+  "updateRetryBaseMs": 3000,
+  "updateRetryMaxMs": 300000,
+  "approvalTimeoutMs": 600000,
+  "nativeVision": true
+}

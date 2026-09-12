@@ -1,0 +1,8 @@
+session session_14a2362f-f9ac-4fd2-9ef2-f01f0f0fa601
+offset 261200917
+.state/telegram-updates.raw.jsonl 22263392 a4f26a926467c68e
+.state/telegram-updates.journal.jsonl 3239660 020a2887ec384e9f
+.state/telegram-live.jsonl 2215335 51bac58f9f73a5cb
+.state/dynamic-groups.json 1464 ca0d4ab844f80abb
+.state/group-context-cursors.json 1211 c8c2416e24042e7b
+wire 6478252 d6825b5b8cf41904

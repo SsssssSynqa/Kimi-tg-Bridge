@@ -64,7 +64,7 @@ test('unsubmitted group album across window keeps original caption/media as cont
   const extract = (name, next, globals, async = true) => new Function(...Object.keys(globals), source.slice(source.indexOf(`${async ? 'async ' : ''}function ${name}(`), source.indexOf(`\n${next}`)) + `; return ${name};`)(...Object.values(globals));
   const replyTargets = extract('replyTargetIdsForBatch', 'function buildGroupBatchPrompt', {}, false);
   const config = { botName: 'fixture' }; const groupConfigFor = () => ({});
-  const buildPrompt = extract('buildGroupBatchPrompt', 'async function askCodex', { config, groupConfigFor, replyTargetIdsForBatch: replyTargets }, false);
+  const buildPrompt = extract('buildGroupBatchPrompt', 'async function askCodex', { config, groupConfigFor, replyTargetIdsForBatch: replyTargets, isoCN: (i = Date.now()) => new Date((i instanceof Date ? i.getTime() : Number(i)) + 288e5).toISOString().slice(0, 19) + '+08:00' }, false);
   let models = 0, input; const sent = [];
   const generate = extract('generateGroupReplies', 'async function notifyGroupFailure', {
     durableInbox: inbox, pendingGroupImages: { pending: () => ({ images: [], tokens: [] }) }, config, groupStillAuthorized: () => true, telegram: async () => {}, groupConfigFor, mentionContextOptions: () => ({}), recentGroupContextDelta: () => [], sessionId: 'same-session', modelQueue: { run: fn => fn() },

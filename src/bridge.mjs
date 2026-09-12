@@ -260,8 +260,21 @@ function resolvePath(baseDir, maybePath) {
   return path.isAbsolute(maybePath) ? maybePath : path.resolve(baseDir, maybePath);
 }
 
+// 2026-09-10 Synqa 要求：全家在 TG 里读到的消息时间与各桥日志一律东八区并标注，
+// 免得把 UTC 当本地时间算错。只作用于 ①喂给模型的 prompt ②人读的日志；
+// durable journal / live log / pending images 等持久化字段保持 ISO UTC 不动。
+// 不依赖宿主时区，将来搬 VPS 输出不变。
+function tsCN(input = Date.now()) {   // 人读：2026-09-10 06:36:00+08
+  const ms = input instanceof Date ? input.getTime() : Number(input);
+  return `${new Date(ms + 288e5).toISOString().slice(0, 19).replace('T', ' ')}+08`;
+}
+function isoCN(input = Date.now()) {  // 模型读：严格 ISO 8601 带偏移
+  const ms = input instanceof Date ? input.getTime() : Number(input);
+  return `${new Date(ms + 288e5).toISOString().slice(0, 19)}+08:00`;
+}
+
 function log(message) {
-  console.log(`${new Date().toISOString()} ${redactSensitiveText(message)}`);
+  console.log(`${tsCN()} ${redactSensitiveText(message)}`);
 }
 
 const args = parseArgs(process.argv);
@@ -1015,7 +1028,7 @@ function buildGroupBatchPrompt(batch, {
   const fileCount = batch.reduce((sum, message) => sum + (message.files || []).length, 0);
   const messages = batch.map((message) => ({
     messageId: message.messageId,
-    sentAt: new Date(message.sentAt || message.receivedAt).toISOString(),
+    sentAt: isoCN(message.sentAt || message.receivedAt),
     sender: message.senderName,
     username: message.senderUsername || null,
     senderIsBot: message.senderIsBot,
@@ -2371,7 +2384,7 @@ function recordUpdateFailure(update, error, phase) {
     return;
   }
 
-  log(`update ${updateId} failed during ${phase}, retry=${retry.attempts} next=${new Date(retry.nextAttemptAt).toISOString()}: ${errorText}`);
+  log(`update ${updateId} failed during ${phase}, retry=${retry.attempts} next=${tsCN(retry.nextAttemptAt)}: ${errorText}`);
   const privateChatId = update.message?.chat?.type === 'private' ? String(update.message.chat.id || '') : '';
   // 2026-08-31：不再向她本人推「没送出去」这条。
   //
@@ -2477,7 +2490,7 @@ function recordGroupBatchReplayFailure(record, error) {
     ).catch((noticeError) => log(`group dead-letter notice failed batch=${record.batchId}: ${noticeError.message}`));
     return;
   }
-  log(`group batch ${record.batchId} replay failed, retry=${retry.attempts} next=${new Date(retry.nextAttemptAt).toISOString()}: ${errorText}`);
+  log(`group batch ${record.batchId} replay failed, retry=${retry.attempts} next=${tsCN(retry.nextAttemptAt)}: ${errorText}`);
   if (retry.attempts === 1) {
     sendMessage(
       ownerUserId,
