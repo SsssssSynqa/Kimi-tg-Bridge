@@ -161,7 +161,8 @@ test('a submit-time cache hint chooses Continue as-is without re-pasting', async
   const reply = await client.runTuiTurn(prompt, 'session_test');
   assert.equal(reply, '完整上下文继续');
   assert.equal(injections.length, 1, 'the stashed prompt belongs to Kimi and must not be pasted twice');
-  assert.deepEqual(keys.slice(0, 4), ['Enter', 'Down', 'Down', 'Enter']);
+  // Escape 是 2026-09-13 起每次提交前关粘贴提示层的固定前缀，不参与顺序断言
+  assert.deepEqual(keys.filter((k) => k !== 'Escape').slice(0, 4), ['Enter', 'Down', 'Down', 'Enter']);
   assert.deepEqual(notices, [{ scene: 'submit', threadId: 'session_test' }]);
 });
 
@@ -196,7 +197,7 @@ test('a pre-existing cache hint is continued before the prompt is injected', asy
   const reply = await client.runTuiTurn(prompt, 'session_test');
   assert.equal(reply, '先关弹窗再提交');
   assert.equal(injections.length, 1, 'the prompt is injected only after the dialog is gone');
-  assert.deepEqual(keys.slice(0, 4), ['Down', 'Down', 'Enter', 'Enter']);
+  assert.deepEqual(keys.filter((k) => k !== 'Escape').slice(0, 4), ['Down', 'Down', 'Enter', 'Enter']);
   assert.deepEqual(notices, [{ scene: 'pre-submit', threadId: 'session_test' }]);
 });
 
@@ -379,7 +380,8 @@ test('paste 已进队列（标记在 pane 历史里）时，只补 Enter，绝�
     /never registered|timed out/i,
   );
   assert.equal(injections.length, 1, '标记已在 pane 里就是没丢——再贴一份就是复印');
-  assert.equal(keys.length, 1, '历史不是 composer，不额外提交 Enter');
+  // 2026-09-13 起每次提交 = Escape + Enter（关掉粘贴后的提示层），只数 Enter
+  assert.equal(keys.filter((k) => k === 'Enter').length, 1, '历史不是 composer，不额外提交 Enter');
 });
 
 test('pane 里查不到本轮标记不证明 paste 丢失，保持 unknown', async () => {

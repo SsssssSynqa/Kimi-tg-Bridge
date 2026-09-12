@@ -836,6 +836,11 @@ export class KimiCliClient {
         try {
           this.tmux(['paste-buffer', '-b', 'skald-bridge-turn', '-t', this.tmuxSession, '-p', '-d']);
           await sleep(800);
+          // 2026-09-13：Kimi 0.42.0 在一次多行粘贴后会弹一个小提示层，裸 Enter 被它吃掉、
+          // 提示原样留在输入框（09-12 07:27 Mac、09-13 01:07 LA 各卡一次，都是人工 Escape+Enter 才提交）。
+          // 此刻没有流式输出（前面已等到 composer 为空），Escape 只会关弹层，不会打断任何回合。
+          this.tmux(['send-keys', '-t', this.tmuxSession, 'Escape']);
+          await sleep(150);
           this.tmux(['send-keys', '-t', this.tmuxSession, 'Enter']);
         } catch (error) {
           record = this.turnLedger.save(record, { state: 'outcome-unknown', lastError: String(error.message || error).slice(0, 500) });
@@ -878,12 +883,18 @@ export class KimiCliClient {
             const waitedFrom = Date.now(); await this.resolveApproval(request);
             deadline += Date.now() - waitedFrom; lastRetry = Date.now(); continue;
           }
-          // Retry Enter only when this exact marker is visibly waiting in the
-          // composer. An absent wire event is never proof a paste was dropped.
+          // Retry Enter only when this exact marker is waiting in the composer. An absent
+          // wire event is never proof a paste was dropped. 2026-09-13：长批次会把 marker
+          // 卷出输入框可见区（显示「↑ N more」），原来的可见性判据永远不满足、补 Enter 永远
+          // 不触发——marker 在可见区 **或** 输入框正折叠着更多行，都算「这一轮还在等提交」。
+          // 只有本桥往这个 TUI 里打字，输入框非空又不是本轮的情况不存在于正常路径。
           if (!state.matched && Date.now() - lastRetry > 5000 && retries < MAX_ENTER_RETRIES) {
             lastRetry = Date.now(); retries += 1;
             const currentPane = this.capturePane();
-            if (!this.composerIsEmpty(currentPane) && currentPane.includes(record.marker)) {
+            const composerHoldsThisTurn = currentPane.includes(record.marker) || /↑\s*\d+\s*more/.test(currentPane);
+            if (!this.composerIsEmpty(currentPane) && composerHoldsThisTurn) {
+              this.tmux(['send-keys', '-t', this.tmuxSession, 'Escape']);
+              await sleep(150);
               this.tmux(['send-keys', '-t', this.tmuxSession, 'Enter']);
             }
           }
