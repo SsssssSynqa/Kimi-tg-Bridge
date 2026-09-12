@@ -710,6 +710,7 @@ function makeCodexClient() {
       nativeVision: config.nativeVision === true,
       engine: kimiEngine,
       tmuxSession: config.tmuxSession || config.kimiTmuxSession || 'skald-tg',
+      tmuxBin: config.tmuxBin || undefined,
       // Synqa's call (2026-08-06): every approval goes to Telegram. The TUI
       // dialog is invisible from a phone, so an unforwarded request is a turn
       // that silently waits forever.

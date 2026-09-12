@@ -154,7 +154,7 @@ export class KimiCliClient {
     nativeVision = false,
     engine = 'spawn',
     tmuxSession = 'skald-tg',
-    tmuxBin = '/usr/local/bin/tmux',
+    tmuxBin = process.platform === 'darwin' ? '/usr/local/bin/tmux' : '/usr/bin/tmux',
     turnStateDir = null,
     relayDir = RELAY_DIR,
     onReady,
