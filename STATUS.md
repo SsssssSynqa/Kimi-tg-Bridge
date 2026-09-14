@@ -2,16 +2,17 @@
 schema-version: 1
 project-id: skald-tg-bridge
 title: Skald Telegram Bridge
-state: waiting
-phase: verification
+state: active
+phase: operation
 scope: current
-waiting-for: Owner 确认迁移后状态与分项台账
-owners: [TBD]
-reviewers: [TBD]
+owners: [skald]
+reviewers: [sephy]
 created-at: 2026-08-31T00:00:00+08:00
-updated-at: 2026-09-07T05:27:00+08:00
+updated-at: 2026-09-14T23:06:00+08:00
 canonical-home: Kimi/skald-tg-bridge
 ---
+> **2026-09-14 当前运行事实**：鸦鸦生产桥运行在 LA `skald-bridge.service`，本轮按 Synqa 明确要求将桥内全部 5 处“妈妈”纠正为“Synqa”。功能提示新增禁止回退断言；Mac 全套 196/196、LA 聚焦 27/27 与语法检查通过。commit `ff6154f` 已部署，桥 PID `363465 → 468080`；Kimi TUI PID `331869` 与 session `session_14a2362f-f9ac-4fd2-9ef2-f01f0f0fa601` 均未变化。远端 `main` 因历史分叉拒绝 fast-forward，未强推；提交已推送到 `fix/skald-synqa-name-20260914`。
+
 > **2026-09-07 当前收口**：本轮修复代码 commit 1717250 已合入；2026-09-06 23:24Z bridge PID94144 已重载，原 TUI1992 与 session不变。187/187＋最后增量22/22通过；completed mixed自动拆解仍保留为特殊残项，当前无active欠账。 详细证据与剩余边界：`/Users/arthas/Desktop/Synergia/tasks/tg-three-bridge-audit-20260907/REPAIR_VERIFICATION.md`。下方历史施工文字按其当时日期理解。
 
 
@@ -26,6 +27,7 @@ canonical-home: Kimi/skald-tg-bridge
 
 | 工作项 | 施工人 | 审核人 | 状态 | 证据 | 剩余工作 | 验收边界 | 最近更新 |
 |---|---|---|---|---|---|---|---|
+| 鸦鸦对 Synqa 的称呼纠偏 | Sephy | Sephy | state=completed phase=verification | 宝儿严格检索改前 5 处、改后 0 处；commit `ff6154f`；Mac 196/196、LA 27/27；部署 6/6 SHA 一致；bridge active+enabled，TUI/session 未变 | 无 | 不改 Saga/聊天历史，不用 `/new` 或 `/refine` 制造验收；以后功能提示只称 Synqa | 2026-09-14 |
 | （整份待 Owner 按 §4.7 拆分为分项） | TBD | TBD | state=waiting | 旧文自称：running / current revision loaded；自然群聊专项验收仍独立 | 待 Owner 拆分并确认 | 机械迁移**不代签**任何一项已完成 | 2026-08-31 |
 
 ## 迁移说明
