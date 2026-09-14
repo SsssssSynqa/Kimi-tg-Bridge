@@ -62,7 +62,7 @@ test('a getUpdates call that returns in time never fires', () => {
   assert.deepEqual(h.stalls, []);
 });
 
-// 这条是防误杀的核心：妈妈一句话可能让 Kimi 生成 10 分钟。
+// 这条是防误杀的核心：Synqa 一句话可能让 Kimi 生成 10 分钟。
 // 那段时间 endPoll() 已经调过了，看门狗必须完全闭嘴。
 test('a long reply generation between polls is never killed', () => {
   const h = makeHarness();

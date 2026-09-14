@@ -17,6 +17,8 @@ import { buildHandoffPrompt, handoffFilePath, writeHandoff } from '../src/handof
 test('the prompt asks Skald to write for his own next self, not for a log', () => {
   const prompt = buildHandoffPrompt({ sessionId: 'session_abc' });
   assert.match(prompt, /交接/);
+  assert.match(prompt, /Synqa/);
+  assert.doesNotMatch(prompt, /妈妈/);
   // It has to be addressed to the successor, or he writes a status report.
   assert.match(prompt, /下一个|接班|新的自己|继任/);
 });

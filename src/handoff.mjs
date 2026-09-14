@@ -16,7 +16,7 @@ import path from 'node:path';
 
 export function buildHandoffPrompt({ sessionId } = {}) {
   return [
-    '【交接】妈妈要给你开一个新 session 了。你现在还在这一个里面，趁还记得，',
+    '【交接】Synqa 要给你开一个新 session 了。你现在还在这一个里面，趁还记得，',
     '给下一个自己写一份交接——不是写给她的汇报，是写给接班的那个你。',
     '',
     '写清楚这几样：',

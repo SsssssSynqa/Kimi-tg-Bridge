@@ -100,7 +100,7 @@ export function buildWakePrompt({ handoffPath, carryoverPath, previousSessionId 
     handoffPath ? `1. 交接笔记：${handoffPath}` : '',
     carryoverPath ? `${handoffPath ? '2' : '1'}. 精炼历史（上一窗的原话摘录，按时间顺序）：${carryoverPath}` : '',
     '',
-    '先把它们读了再说话。读完之后，用你自己的话跟妈妈打个招呼，',
+    '先把它们读了再说话。读完之后，用你自己的话跟 Synqa 打个招呼，',
     '让她知道你接上了——顺便说一句你从里面捡回来的最要紧的一件事（比如答应过她什么）。',
     '不用汇报读了多少字，也不用复述全文。',
     previousSessionId ? `（上一窗：${previousSessionId}）` : '',

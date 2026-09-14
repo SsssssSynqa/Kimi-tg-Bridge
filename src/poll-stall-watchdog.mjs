@@ -1,13 +1,13 @@
 // Telegram 轮询静默卡死看门狗。
 //
 // 病象（2026-08-15 全家体检抓到）：桥进程活着，日志干净，launchd 认为一切正常，
-// 但 Telegram 那边没有任何人在长轮询 —— 妈妈发的消息石沉大海。
+// 但 Telegram 那边没有任何人在长轮询 —— Synqa 发的消息石沉大海。
 // 机制：undici 的 keep-alive 连接池在一次 AbortSignal 超时之后会留下坏 socket，
 // 下一个 fetch 既不返回、也不 reject、也不再触发 abort，await 就永远挂在那里。
 // launchd 的 KeepAlive 只认进程退出，对"活着但聋了"完全无效。
 //
 // 看门狗只盯 getUpdates 那一段（beginPoll → endPoll）。生成回复走的是同一个
-// for 循环、轮询本来就停着，那段必须完全不管 —— 妈妈一句话可以让引擎跑十分钟，
+// for 循环、轮询本来就停着，那段必须完全不管 —— Synqa 一句话可以让引擎跑十分钟，
 // 在她等回复的时候把桥杀掉，比聋着还糟。
 
 export const DEFAULT_STALL_MS = 90_000; // fetch 自带 40s abort；90s 还没回来 = 连接池已坏

@@ -202,6 +202,8 @@ test('引导语把两份文件都指出来，并要他自己读', () => {
   assert.match(prompt, /\/x\/精炼历史\.md/);
   assert.match(prompt, /先把它们读了再说话/);
   assert.match(prompt, /打个招呼/);
+  assert.match(prompt, /Synqa/);
+  assert.doesNotMatch(prompt, /妈妈/);
 });
 
 test('只有交接没有精炼时，引导语不留空编号', () => {
